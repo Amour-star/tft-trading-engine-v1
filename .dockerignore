@@ -1,0 +1,25 @@
+.git
+.gitignore
+
+# Local Python env and caches
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Local runtime artifacts
+logs/
+saved_models/
+data/historical/
+*.log
+
+# Editor/system artifacts
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+.DS_Store

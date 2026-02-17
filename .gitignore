@@ -1,0 +1,27 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.env
+*.log
+logs/*.json
+logs/*.gz
+data/historical/*.parquet
+saved_models/
+.pytest_cache/
+venv/
+.venv/
+
+# local secrets
+*.pem
+*.key
+ubuntu@*
+# local artifacts
+lightning_logs/
+tmp_tar_check_*/
+*.db
+
+*.tar.gz
+.claude/

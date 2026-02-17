@@ -1,0 +1,83 @@
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: tft_trading
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secure_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trader -d tft_trading"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  engine:
+    image: tft-trading-engine-app:latest
+    build: .
+    command: python scripts/run_engine.py
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+      - ./saved_models:/app/saved_models
+      - ./data/historical:/app/data/historical
+      - ./data:/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  dashboard-api:
+    image: tft-trading-engine-app:latest
+    command: python -m uvicorn dashboard.api:app --host 0.0.0.0 --port 8000
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./data:/data
+
+  dashboard-ui:
+    image: tft-trading-engine-app:latest
+    command: streamlit run dashboard/streamlit_app.py --server.port 8501 --server.headless true --server.address 0.0.0.0
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      API_BASE: http://dashboard-api:8000/api
+    ports:
+      - "8501:8501"
+    depends_on:
+      - dashboard-api
+
+volumes:
+  pgdata:

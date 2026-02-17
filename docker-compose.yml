@@ -33,6 +33,7 @@ services:
     environment:
       POSTGRES_HOST: postgres
       REDIS_HOST: redis
+      CUDA_VISIBLE_DEVICES: "-1"
     depends_on:
       postgres:
         condition: service_healthy
@@ -44,13 +45,6 @@ services:
       - ./data/historical:/app/data/historical
       - ./data:/data
     restart: unless-stopped
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
 
   dashboard-api:
     image: tft-trading-engine-app:latest

@@ -1,27 +1,42 @@
+# Python
 __pycache__/
-*.py[cod]
-*$py.class
-*.egg-info/
-dist/
-build/
+*.pyc
+
+# Environments
 .env
-*.log
-logs/*.json
-logs/*.gz
-data/historical/*.parquet
-saved_models/
-.pytest_cache/
 venv/
 .venv/
 
-# local secrets
+# Logs
+logs/
+lightning_logs/
+
+# Data
+data/historical/
+*.parquet
+*.db
+*.sqlite
+
+# Models
+saved_models/
+checkpoints/
+*.ckpt
+
+# Keys
 *.pem
 *.key
-ubuntu@*
-# local artifacts
-lightning_logs/
-tmp_tar_check_*/
-*.db
+ssh-key*
+oracle-key.pem
 
-*.tar.gz
+# IDE / local
+.vscode/
+.idea/
 .claude/
+
+# Temp
+tmp*/
+temp/
+
+# OS
+.DS_Store
+Thumbs.db

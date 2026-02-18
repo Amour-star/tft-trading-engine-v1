@@ -53,6 +53,7 @@ class TradingEngine:
         self._cycle_interval: int = 60  # seconds between signal scans
         self._monitor_interval: int = 10  # seconds between position checks
         self._api_errors: int = 0
+        self._auto_train_attempted: bool = False
 
         # Signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
@@ -74,25 +75,12 @@ class TradingEngine:
                 logger.error(f"Failed to load model {model_version}: {e}")
                 logger.warning("Engine will continue in standby mode.")
         else:
-            models = TFTPredictor.list_models()
-            if models:
-                try:
-                    self.predictor.load(models[-1])
-                    logger.info(f"Loaded latest model: {models[-1]}")
-                    model_loaded = True
-                except Exception as e:
-                    logger.error(f"Failed to load latest model {models[-1]}: {e}")
-                    logger.warning("Engine will continue in standby mode.")
-            else:
-                logger.warning("No trained model found. Engine will run in standby mode.")
+            model_loaded = self._ensure_model_available()
+            if not model_loaded:
+                logger.warning("No loadable model found. Engine will run in standby mode.")
 
         if model_loaded:
-            # Load safety state
-            self.safety.load_state()
-
-            # Position reconciliation
-            if settings.safety.position_reconciliation_on_start:
-                self.executor.reconcile_positions()
+            self._activate_after_model_load()
 
         # Main loop
         self._running = True
@@ -109,17 +97,11 @@ class TradingEngine:
                 if not model_loaded:
                     if now - last_model_check >= 30:
                         last_model_check = now
-                        models = TFTPredictor.list_models()
-                        if models:
-                            try:
-                                self.predictor.load(models[-1])
-                                logger.info(f"Model found and loaded: {models[-1]}")
-                                model_loaded = True
-                                self.safety.load_state()
-                            except Exception as e:
-                                logger.error(f"Model load failed for {models[-1]}: {e}")
+                        model_loaded = self._ensure_model_available()
+                        if model_loaded:
+                            self._activate_after_model_load()
                         else:
-                            logger.debug("Still waiting for a trained model...")
+                            logger.debug("Still waiting for a loadable model...")
                     time.sleep(self._monitor_interval)
                     continue
 
@@ -167,6 +149,174 @@ class TradingEngine:
                 time.sleep(30)
 
         self._shutdown()
+
+    def _activate_after_model_load(self) -> None:
+        """Run startup hooks after a model is successfully loaded."""
+        self.safety.load_state()
+        if settings.safety.position_reconciliation_on_start:
+            self.executor.reconcile_positions()
+
+    def _ensure_model_available(self) -> bool:
+        """
+        Ensure there is a loadable model.
+        Tries existing checkpoints first, then optional auto-train bootstrap.
+        """
+        if self._load_latest_model():
+            return True
+
+        if (
+            settings.model.auto_train_if_missing
+            and not self._auto_train_attempted
+        ):
+            self._auto_train_attempted = True
+            trained_version = self._bootstrap_train_model()
+            if trained_version:
+                try:
+                    self.predictor.load(trained_version)
+                    logger.info(f"Loaded newly trained model: {trained_version}")
+                    return True
+                except Exception as e:
+                    logger.error(f"New model load failed ({trained_version}): {e}")
+
+        return False
+
+    def _load_latest_model(self) -> bool:
+        """Try to load available models from newest to oldest."""
+        models = TFTPredictor.list_models()
+        if not models:
+            return False
+
+        for version in reversed(models):
+            try:
+                self.predictor.load(version)
+                logger.info(f"Loaded model: {version}")
+                return True
+            except Exception as e:
+                logger.error(f"Model load failed for {version}: {e}")
+
+        return False
+
+    def _bootstrap_train_model(self) -> Optional[str]:
+        """Train a starter model from local history, optionally fetching history first."""
+        from pathlib import Path
+        import pandas as pd
+
+        from data.database import ModelMetric
+        from data.features import compute_features
+        from models.tft_model import train_tft
+
+        tf = settings.model.bootstrap_timeframe
+        months = settings.model.bootstrap_history_months
+        pairs = settings.model.bootstrap_pairs
+        data_dir = Path("data/historical")
+        data_dir.mkdir(parents=True, exist_ok=True)
+
+        data_files = sorted(data_dir.glob(f"*_{tf}.parquet"))
+        if not data_files and settings.model.auto_fetch_history_if_missing:
+            logger.info(
+                f"No {tf} training data found. Fetching history for bootstrap "
+                f"(pairs={pairs}, months={months})..."
+            )
+            self._fetch_bootstrap_history(data_dir, tf, months, pairs, compute_features)
+            data_files = sorted(data_dir.glob(f"*_{tf}.parquet"))
+
+        if not data_files:
+            logger.warning(
+                f"Auto-train skipped: no training files found for timeframe {tf} "
+                f"in {data_dir}."
+            )
+            return None
+
+        all_dfs = []
+        for f in data_files:
+            try:
+                df = pd.read_parquet(f)
+                if "pair" not in df.columns:
+                    df["pair"] = f.stem.replace(f"_{tf}", "")
+                all_dfs.append(df)
+            except Exception as e:
+                logger.error(f"Failed reading training file {f}: {e}")
+
+        if not all_dfs:
+            logger.warning("Auto-train skipped: no readable training data files.")
+            return None
+
+        combined = pd.concat(all_dfs, ignore_index=True)
+        version_name = f"auto_tft_v{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+        logger.info(
+            f"Auto-training model {version_name} on {len(combined)} rows "
+            f"from {len(all_dfs)} files..."
+        )
+        version, metrics = train_tft(combined, model_name=version_name)
+
+        session = get_session()
+        try:
+            session.query(ModelMetric).update({ModelMetric.is_active: False})
+            session.add(
+                ModelMetric(
+                    model_version=version,
+                    trained_at=datetime.utcnow(),
+                    training_loss=metrics.get("training_loss"),
+                    validation_loss=metrics.get("validation_loss"),
+                    is_active=True,
+                    notes="Auto-trained at engine startup",
+                    hyperparameters={
+                        "encoder_length": settings.model.encoder_length,
+                        "prediction_length": settings.model.prediction_length,
+                        "hidden_size": settings.model.hidden_size,
+                        "attention_head_size": settings.model.attention_head_size,
+                        "dropout": settings.model.dropout,
+                        "learning_rate": settings.model.learning_rate,
+                    },
+                )
+            )
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Failed to save auto-training model metrics: {e}")
+        finally:
+            session.close()
+
+        logger.info(
+            f"Auto-training complete: {version} (val_loss={metrics.get('validation_loss')})"
+        )
+        return version
+
+    def _fetch_bootstrap_history(
+        self,
+        data_dir,
+        timeframe: str,
+        months: int,
+        pairs: int,
+        compute_features,
+    ) -> None:
+        """Fetch and save starter historical data for training."""
+        import pandas as pd
+
+        top_pairs = self.fetcher.get_top_usdt_pairs(pairs)
+        pair_symbols = [p["symbol"] for p in top_pairs]
+        if "BTC-USDT" not in pair_symbols:
+            pair_symbols.append("BTC-USDT")
+
+        btc_df = self.fetcher.fetch_history("BTC-USDT", timeframe, months)
+        if btc_df.empty:
+            logger.warning("Bootstrap fetch failed: BTC-USDT history is empty.")
+            return
+
+        for symbol in pair_symbols:
+            try:
+                df = self.fetcher.fetch_history(symbol, timeframe, months)
+                if df.empty:
+                    logger.warning(f"Bootstrap fetch: no data for {symbol} {timeframe}")
+                    continue
+
+                df["pair"] = symbol
+                feat_df = compute_features(df, btc_df if not btc_df.empty else pd.DataFrame())
+                out = data_dir / f"{symbol}_{timeframe}.parquet"
+                feat_df.to_parquet(out, index=False)
+                logger.info(f"Saved bootstrap data: {out}")
+            except Exception as e:
+                logger.error(f"Bootstrap fetch failed for {symbol}: {e}")
 
     def _signal_cycle(self) -> None:
         """Run one signal generation and execution cycle."""

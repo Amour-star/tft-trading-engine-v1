@@ -135,6 +135,11 @@ class ModelConfig:
     prediction_length: int = 12
     retrain_interval_days: int = 7
     validation_weeks: int = 2
+    auto_train_if_missing: bool = _env_bool("AUTO_TRAIN_IF_MISSING", False)
+    auto_fetch_history_if_missing: bool = _env_bool("AUTO_FETCH_HISTORY_IF_MISSING", True)
+    bootstrap_pairs: int = _env_int("BOOTSTRAP_PAIRS", 10)
+    bootstrap_timeframe: str = _env("BOOTSTRAP_TIMEFRAME", "15min")
+    bootstrap_history_months: int = _env_int("BOOTSTRAP_HISTORY_MONTHS", 6)
 
 
 @dataclass(frozen=True)

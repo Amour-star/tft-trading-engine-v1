@@ -248,10 +248,16 @@ def train_tft(
         save_top_k=1,
     )
 
-    # Trainer
+    # Trainer — honour FORCE_CPU / CUDA_VISIBLE_DEVICES env vars
+    _force_cpu = (
+        os.environ.get("FORCE_CPU", "") == "1"
+        or os.environ.get("CUDA_VISIBLE_DEVICES", "UNSET") in ("", "-1")
+    )
+    _accelerator = "cpu" if _force_cpu else "auto"
     trainer = pl.Trainer(
         max_epochs=cfg.max_epochs,
-        accelerator="auto",
+        accelerator=_accelerator,
+        devices=1,
         gradient_clip_val=0.1,
         callbacks=[early_stop, checkpoint],
         enable_progress_bar=True,

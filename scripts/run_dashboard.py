@@ -13,6 +13,7 @@ def run_streamlit():
         "streamlit", "run", "dashboard/streamlit_app.py",
         "--server.port", str(settings.dashboard.dashboard_port),
         "--server.headless", "true",
+        "--server.address", "0.0.0.0",
     ])
 
 

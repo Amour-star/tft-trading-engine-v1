@@ -1,0 +1,13 @@
+# Streamlit server configuration for Docker / remote access.
+# This file is a safety net — the same flags are also passed via CLI
+# in docker-compose.yml and scripts/run_dashboard.py.
+
+[server]
+headless = true
+address = "0.0.0.0"
+port = 8501
+enableCORS = false
+enableXsrfProtection = false
+
+[browser]
+gatherUsageStats = false

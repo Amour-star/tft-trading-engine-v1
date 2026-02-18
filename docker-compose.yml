@@ -33,7 +33,9 @@ services:
     environment:
       POSTGRES_HOST: postgres
       REDIS_HOST: redis
-      CUDA_VISIBLE_DEVICES: "-1"
+      # ---- Force CPU-only (no GPU) ----
+      CUDA_VISIBLE_DEVICES: ""
+      FORCE_CPU: "1"
     depends_on:
       postgres:
         condition: service_healthy
@@ -45,6 +47,15 @@ services:
       - ./data/historical:/app/data/historical
       - ./data:/data
     restart: unless-stopped
+    # CPU resource constraints (no GPU runtime)
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 4G
+        reservations:
+          cpus: "1.0"
+          memory: 1G
 
   dashboard-api:
     image: tft-trading-engine-app:latest
@@ -53,6 +64,8 @@ services:
     environment:
       POSTGRES_HOST: postgres
       REDIS_HOST: redis
+      CUDA_VISIBLE_DEVICES: ""
+      FORCE_CPU: "1"
     ports:
       - "8000:8000"
     depends_on:
@@ -60,18 +73,41 @@ services:
         condition: service_healthy
     volumes:
       - ./data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/status || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   dashboard-ui:
     image: tft-trading-engine-app:latest
-    command: streamlit run dashboard/streamlit_app.py --server.port 8501 --server.headless true --server.address 0.0.0.0
+    command: >
+      streamlit run dashboard/streamlit_app.py
+      --server.port=8501
+      --server.headless=true
+      --server.address=0.0.0.0
+      --server.enableCORS=false
+      --server.enableXsrfProtection=false
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
       API_BASE: http://dashboard-api:8000/api
+      CUDA_VISIBLE_DEVICES: ""
+      FORCE_CPU: "1"
     ports:
-      - "8501:8501"
+      - "0.0.0.0:8501:8501"
     depends_on:
-      - dashboard-api
+      dashboard-api:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8501/_stcore/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
 volumes:
   pgdata:

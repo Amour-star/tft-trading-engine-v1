@@ -22,7 +22,7 @@ try:
         TimeSeriesDataSet,
         GroupNormalizer,
     )
-    from pytorch_forecasting.metrics import QuantileLoss
+    from pytorch_forecasting.metrics import QuantileLoss, SMAPE, MAE, RMSE, MAPE
     from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
     HAS_TFT = True
 except ImportError:
@@ -313,9 +313,22 @@ class TFTPredictor:
         best_ckpt = sorted(ckpt_files, key=lambda p: p.stat().st_mtime, reverse=True)[0]
         # map_location handles CUDA→CPU fallback when no GPU is available
         map_loc = None if torch.cuda.is_available() else torch.device("cpu")
-        self.model = TemporalFusionTransformer.load_from_checkpoint(
-            str(best_ckpt), map_location=map_loc,
-        )
+        try:
+            self.model = TemporalFusionTransformer.load_from_checkpoint(
+                str(best_ckpt), map_location=map_loc,
+            )
+        except AssertionError as exc:
+            if "Torch not compiled with CUDA enabled" not in str(exc):
+                raise
+            logger.warning(
+                "CUDA checkpoint metadata detected; retrying model load in CPU mode."
+            )
+            self.model = TemporalFusionTransformer.load_from_checkpoint(
+                str(best_ckpt),
+                map_location=torch.device("cpu"),
+                loss=QuantileLoss(),
+                logging_metrics=torch.nn.ModuleList([SMAPE(), MAE(), RMSE(), MAPE()]),
+            )
         self.model.eval()
         self.model_version = model_version
         logger.info(f"Loaded model: {model_version} from {best_ckpt}")

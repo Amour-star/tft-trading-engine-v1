@@ -67,14 +67,22 @@ class TradingEngine:
         # Load model
         model_loaded = False
         if model_version:
-            self.predictor.load(model_version)
-            model_loaded = True
+            try:
+                self.predictor.load(model_version)
+                model_loaded = True
+            except Exception as e:
+                logger.error(f"Failed to load model {model_version}: {e}")
+                logger.warning("Engine will continue in standby mode.")
         else:
             models = TFTPredictor.list_models()
             if models:
-                self.predictor.load(models[-1])
-                logger.info(f"Loaded latest model: {models[-1]}")
-                model_loaded = True
+                try:
+                    self.predictor.load(models[-1])
+                    logger.info(f"Loaded latest model: {models[-1]}")
+                    model_loaded = True
+                except Exception as e:
+                    logger.error(f"Failed to load latest model {models[-1]}: {e}")
+                    logger.warning("Engine will continue in standby mode.")
             else:
                 logger.warning("No trained model found. Engine will run in standby mode.")
 
@@ -103,10 +111,13 @@ class TradingEngine:
                         last_model_check = now
                         models = TFTPredictor.list_models()
                         if models:
-                            self.predictor.load(models[-1])
-                            logger.info(f"Model found and loaded: {models[-1]}")
-                            model_loaded = True
-                            self.safety.load_state()
+                            try:
+                                self.predictor.load(models[-1])
+                                logger.info(f"Model found and loaded: {models[-1]}")
+                                model_loaded = True
+                                self.safety.load_state()
+                            except Exception as e:
+                                logger.error(f"Model load failed for {models[-1]}: {e}")
                         else:
                             logger.debug("Still waiting for a trained model...")
                     time.sleep(self._monitor_interval)

@@ -12,8 +12,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-import torch
 from loguru import logger
+
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    torch = None  # type: ignore
+    HAS_TORCH = False
 
 try:
     import lightning.pytorch as pl
@@ -27,7 +33,10 @@ try:
     HAS_TFT = True
 except ImportError:
     HAS_TFT = False
-    logger.warning("pytorch-forecasting not installed. Model training/inference disabled.")
+    if not HAS_TORCH:
+        logger.warning("torch not installed. Model training/inference disabled.")
+    else:
+        logger.warning("pytorch-forecasting not installed. Model training/inference disabled.")
 
 from config.settings import settings
 from data.features import get_feature_columns, get_categorical_columns

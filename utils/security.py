@@ -6,11 +6,18 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from cryptography.fernet import Fernet
+try:
+    from cryptography.fernet import Fernet
+    HAS_CRYPTOGRAPHY = True
+except BaseException:
+    Fernet = None  # type: ignore
+    HAS_CRYPTOGRAPHY = False
 
 
 def get_fernet_key() -> bytes:
     """Get or generate a Fernet encryption key."""
+    if not HAS_CRYPTOGRAPHY:
+        raise RuntimeError("cryptography package is not available")
     key = os.getenv("FERNET_KEY")
     if key:
         return key.encode()
@@ -21,11 +28,13 @@ def get_fernet_key() -> bytes:
     return new_key
 
 
-_fernet: Optional[Fernet] = None
+_fernet: Optional["Fernet"] = None
 
 
-def _get_fernet() -> Fernet:
+def _get_fernet() -> "Fernet":
     global _fernet
+    if not HAS_CRYPTOGRAPHY:
+        raise RuntimeError("cryptography package is not available")
     if _fernet is None:
         _fernet = Fernet(get_fernet_key())
     return _fernet

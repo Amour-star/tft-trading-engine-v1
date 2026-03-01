@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+    tags:
+      - 'v*'
+      - 'release-*'
 
 jobs:
   test:
@@ -38,8 +41,24 @@ jobs:
           host: ${{ secrets.ORACLE_HOST }}
           username: ${{ secrets.ORACLE_USER }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
+          envs: GITHUB_SHA,GITHUB_REF_NAME,GITHUB_REF_TYPE
           script: |
+            set -euo pipefail
             cd ~/tft-trading-engine-v1
-            git fetch --all
-            git reset --hard origin/main
-            docker compose up -d --build --remove-orphans
+            git fetch --prune --tags origin
+
+            if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+              TARGET_REF="refs/tags/${GITHUB_REF_NAME}"
+              git checkout --detach "${TARGET_REF}"
+            else
+              git checkout --detach "${GITHUB_SHA}"
+            fi
+
+            python3 -m venv .venv
+            source .venv/bin/activate
+            pip install --upgrade pip
+            pip install -r requirements.txt
+            python -c "from tft_engine.database.migrations import initialize_database; initialize_database()"
+            sudo systemctl restart tft-engine-api || true
+            sudo systemctl restart tft-engine-dashboard || true
+            sudo systemctl restart tft-engine-worker || true

@@ -45,11 +45,11 @@ def main() -> int:
 
     # Public endpoint sanity check
     try:
-        ticker = fetcher.market.get_ticker("BTC-USDT")
+        ticker = fetcher.market.get_ticker("XRP-USDT")
         price = float(ticker.get("price", 0))
         if price <= 0:
             raise ValueError("invalid ticker price returned")
-        print(f"Public API: OK (BTC-USDT price={price:.6f})")
+        print(f"Public API: OK (XRP-USDT price={price:.6f})")
     except Exception as e:
         print(f"Public API: FAILED ({e})")
         return 1
@@ -84,4 +84,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 

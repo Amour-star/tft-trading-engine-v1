@@ -1,0 +1,10 @@
+services:
+  engine:
+    build: .
+    environment:
+      - ENGINE_MODE=PAPER
+      - TRADING_MODE=PAPER
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      retries: 3

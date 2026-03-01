@@ -1,77 +1,100 @@
 services:
-  postgres:
-    image: postgres:15
+  engine:
+    build:
+      context: .
+      args:
+        USE_CUDA: ${USE_CUDA:-false}
+    image: tft-trading-engine:prod
+    gpus: all
+    container_name: tft-engine
+    env_file: .env
     environment:
-      POSTGRES_DB: tft_trading
-      POSTGRES_USER: trader
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secure_password}
-    ports:
-      - "5432:5432"
+      ENGINE_MODE: ${ENGINE_MODE:-PAPER}
+      TRADING_MODE: ${TRADING_MODE:-PAPER}
+      SQLITE_PATH: /app/state/tft_engine.db
+      PAPER_DB_PATH: /app/state/paper_trading.db
+      ENGINE_LOCK_FILE: /app/state/tft_engine.lock
+      REDIS_HOST: redis
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - ./state:/app/state
+      - ./logs:/app/logs
+      - ./saved_models:/app/saved_models:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U trader -d tft_trading"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      retries: 3
+    restart: on-failure
+    depends_on:
+      - redis
+
+  api:
+    image: tft-trading-engine:prod
+    container_name: tft-api
+    entrypoint:
+      [
+        "python",
+        "-m",
+        "uvicorn",
+        "dashboard.api:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+      ]
+    env_file: .env
+    environment:
+      ENGINE_MODE: ${ENGINE_MODE:-PAPER}
+      TRADING_MODE: ${TRADING_MODE:-PAPER}
+      SQLITE_PATH: /app/state/tft_engine.db
+      PAPER_DB_PATH: /app/state/paper_trading.db
+      ENGINE_LOCK_FILE: /app/state/tft_engine.lock
+      REDIS_HOST: redis
+    volumes:
+      - ./state:/app/state
+      - ./logs:/app/logs
+      - ./saved_models:/app/saved_models:ro
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      retries: 3
+    restart: on-failure
+    depends_on:
+      engine:
+        condition: service_healthy
+
+  dashboard:
+    image: tft-trading-engine:prod
+    container_name: tft-dashboard
+    entrypoint:
+      [
+        "python",
+        "-m",
+        "streamlit",
+        "run",
+        "dashboard/streamlit_app.py",
+        "--server.port",
+        "8501",
+        "--server.address",
+        "0.0.0.0",
+      ]
+    env_file: .env
+    environment:
+      API_BASE: http://api:8000/api
+    ports:
+      - "8501:8501"
+    restart: on-failure
+    depends_on:
+      api:
+        condition: service_healthy
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  engine:
-    image: tft-trading-engine-app:latest
-    build: .
-    command: python scripts/run_engine.py
-    env_file: .env
-    environment:
-      POSTGRES_HOST: postgres
-      REDIS_HOST: redis
-      CUDA_VISIBLE_DEVICES: "-1"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+    container_name: tft-redis
+    restart: on-failure
     volumes:
-      - ./logs:/app/logs
-      - ./saved_models:/app/saved_models
-      - ./data/historical:/app/data/historical
-      - ./data:/data
-    restart: unless-stopped
-
-  dashboard-api:
-    image: tft-trading-engine-app:latest
-    command: python -m uvicorn dashboard.api:app --host 0.0.0.0 --port 8000
-    env_file: .env
-    environment:
-      POSTGRES_HOST: postgres
-      REDIS_HOST: redis
-    ports:
-      - "8000:8000"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    volumes:
-      - ./data:/data
-
-  dashboard-ui:
-    image: tft-trading-engine-app:latest
-    command: streamlit run dashboard/streamlit_app.py --server.port 8501 --server.headless true --server.address 0.0.0.0
-    env_file: .env
-    environment:
-      POSTGRES_HOST: postgres
-      API_BASE: http://dashboard-api:8000/api
-    ports:
-      - "8501:8501"
-    depends_on:
-      - dashboard-api
+      - redis_data:/data
 
 volumes:
-  pgdata:
+  redis_data:

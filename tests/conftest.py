@@ -9,6 +9,12 @@ os.environ["TRADING_MODE"] = "PAPER"
 os.environ["POSTGRES_HOST"] = ""
 os.environ["POSTGRES_PASSWORD"] = ""
 
+# Relax safety caps in unit tests unless a test explicitly overrides them.
+os.environ.setdefault("MAX_POSITION_PCT", "1.0")
+os.environ.setdefault("MAX_NOTIONAL_PER_TRADE", "1000000000000")
+os.environ.setdefault("KILL_SWITCH_DAILY_DRAWDOWN", "1.0")
+os.environ.setdefault("KILL_SWITCH_BALANCE_DROP", "1.0")
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
@@ -34,7 +40,14 @@ _GET_SESSION_TARGETS = [
     "engine.safety",
     "engine.feedback",
     "engine.main",
+    "engine.attribution",
+    "engine.performance_metrics",
+    "engine.strategy_evolution",
+    "engine.governance",
     "dashboard.api",
+    "risk.prop_risk_manager",
+    "paper.reset",
+    "services.reconciliation",
 ]
 
 
@@ -85,6 +98,16 @@ def patch_db(db_engine):
             patches.append(p)
         except AttributeError:
             pass
+        try:
+            p = patch(f"{target}.get_engine", lambda: db_engine)
+            p.start()
+            patches.append(p)
+        except AttributeError:
+            pass
+
+    engine_patch = patch("data.database.get_engine", lambda: db_engine)
+    engine_patch.start()
+    patches.append(engine_patch)
 
     yield _get_session
 
@@ -127,8 +150,8 @@ def make_mock_fetcher(current_price: float = 100.0) -> MagicMock:
     }
     fetcher.get_spread.return_value = (0.02, 0.0002)
     fetcher.get_symbol_info.return_value = {
-        "symbol": "BTC-USDT",
-        "base_currency": "BTC",
+        "symbol": "XRP-USDT",
+        "base_currency": "XRP",
         "quote_currency": "USDT",
         "base_min_size": 0.00001,
         "base_max_size": 10000.0,
@@ -139,8 +162,7 @@ def make_mock_fetcher(current_price: float = 100.0) -> MagicMock:
         "fee_currency": "USDT",
     }
     fetcher.get_top_usdt_pairs.return_value = [
-        {"symbol": "BTC-USDT", "volValue": "1000000000"},
-        {"symbol": "ETH-USDT", "volValue": "500000000"},
+        {"symbol": "XRP-USDT", "volValue": "180000000"},
     ]
     fetcher.fetch_klines.return_value = make_ohlcv(300, base_price=current_price)
     fetcher.get_balance.return_value = 10000.0
@@ -167,6 +189,7 @@ def make_mock_predictor(
     }
     predictor.model = True  # Non-None to pass model checks
     predictor.model_version = "test_v1"
+    predictor.get_supported_pairs.return_value = ["XRP-USDT"]
     return predictor
 
 

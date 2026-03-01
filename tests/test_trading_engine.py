@@ -127,7 +127,7 @@ class TestPaperExecutor:
     def test_buy_reduces_balance(self):
         """Buying should reduce balance by cost + fees."""
         executor, db_path = self._create_paper_executor(balance=10000.0)
-        result = executor.buy("BTC-USDT", 1.0, price=100.0)
+        result = executor.buy("XRP-USDT", 1.0, price=100.0)
         assert result["status"] == "filled"
         assert result["fill_price"] == 100.0
         # Cost = 100 * 1.0 = 100, Fee = 100 * 1.0 * 0.001 = 0.1
@@ -140,9 +140,9 @@ class TestPaperExecutor:
         fetcher = make_mock_fetcher(current_price=110.0)
         executor, db_path = self._create_paper_executor(fetcher=fetcher, balance=10000.0)
         # Buy first
-        executor.buy("BTC-USDT", 1.0, price=100.0)
+        executor.buy("XRP-USDT", 1.0, price=100.0)
         # Sell at higher price
-        result = executor.sell("BTC-USDT", 1.0, price=110.0)
+        result = executor.sell("XRP-USDT", 1.0, price=110.0)
         assert result["status"] == "filled"
         assert result["realized_pnl"] is not None
         # PnL = proceeds - cost = (110*1 - 0.11) - (100*1) = 9.89
@@ -150,31 +150,33 @@ class TestPaperExecutor:
         assert result["realized_pnl"] > 0
         os.unlink(db_path)
 
-    def test_sell_without_position_raises(self):
-        """Selling without a position should raise ValueError."""
+    def test_sell_without_position_opens_short(self):
+        """Selling without a long should open a short position in paper mode."""
         executor, db_path = self._create_paper_executor()
-        with pytest.raises(ValueError, match="No open paper position"):
-            executor.sell("BTC-USDT", 1.0, price=100.0)
+        result = executor.sell("XRP-USDT", 1.0, price=100.0)
+        assert result["status"] == "filled"
+        positions = executor.get_positions()
+        assert positions["XRP-USDT"]["quantity"] == -1.0
         os.unlink(db_path)
 
     def test_position_tracking(self):
         """Positions should be tracked correctly."""
         executor, db_path = self._create_paper_executor()
-        executor.buy("BTC-USDT", 1.0, price=100.0)
+        executor.buy("XRP-USDT", 1.0, price=100.0)
         positions = executor.get_positions()
-        assert "BTC-USDT" in positions
-        assert positions["BTC-USDT"]["quantity"] == 1.0
-        assert positions["BTC-USDT"]["avg_entry_price"] == 100.0
+        assert "XRP-USDT" in positions
+        assert positions["XRP-USDT"]["quantity"] == 1.0
+        assert positions["XRP-USDT"]["avg_entry_price"] == 100.0
         os.unlink(db_path)
 
     def test_close_position(self):
         """Close position should sell entire position."""
         executor, db_path = self._create_paper_executor()
-        executor.buy("BTC-USDT", 2.0, price=100.0)
-        result = executor.close_position("BTC-USDT")
+        executor.buy("XRP-USDT", 2.0, price=100.0)
+        result = executor.close_position("XRP-USDT")
         assert result["status"] == "filled"
         positions = executor.get_positions()
-        assert "BTC-USDT" not in positions
+        assert "XRP-USDT" not in positions
         os.unlink(db_path)
 
     def test_persistence(self):
@@ -186,31 +188,33 @@ class TestPaperExecutor:
 
         # Create executor and buy
         exec1 = PaperExecutor(fetcher=fetcher, starting_balance=10000.0, db_path=tmp.name)
-        exec1.buy("BTC-USDT", 1.0, price=100.0)
+        exec1.buy("XRP-USDT", 1.0, price=100.0)
         balance_after_buy = exec1.get_balance()
 
         # Create new executor from same database
         exec2 = PaperExecutor(fetcher=fetcher, starting_balance=10000.0, db_path=tmp.name)
         assert abs(exec2.get_balance() - balance_after_buy) < 0.01
         positions = exec2.get_positions()
-        assert "BTC-USDT" in positions
+        assert "XRP-USDT" in positions
         os.unlink(tmp.name)
 
     def test_trade_history(self):
         """Trade history should record all buy/sell events."""
         executor, db_path = self._create_paper_executor()
-        executor.buy("BTC-USDT", 1.0, price=100.0)
-        executor.sell("BTC-USDT", 1.0, price=110.0)
+        executor.buy("XRP-USDT", 1.0, price=100.0)
+        executor.sell("XRP-USDT", 1.0, price=110.0)
         assert len(executor.trade_history) == 2
         assert executor.trade_history[0]["side"] == "BUY"
         assert executor.trade_history[1]["side"] == "SELL"
         os.unlink(db_path)
 
     def test_insufficient_balance(self):
-        """Buying beyond balance should raise ValueError."""
+        """Buying beyond balance should fail gracefully in paper mode."""
         executor, db_path = self._create_paper_executor(balance=100.0)
-        with pytest.raises(ValueError, match="Insufficient paper balance"):
-            executor.buy("BTC-USDT", 10.0, price=100.0)  # Cost = 1000 > 100
+        result = executor.buy("XRP-USDT", 10.0, price=100.0)  # Cost = 1000 > 100
+        assert result is False
+        assert executor.get_balance() == pytest.approx(100.0)
+        assert executor.get_positions() == {}
         os.unlink(db_path)
 
 
@@ -236,14 +240,15 @@ class TestDecisionEngine:
         assert signal.target_price > signal.entry_price
         assert signal.risk_reward >= 2.0
 
-    def test_generate_signal_bearish_returns_none(self):
-        """Should return None when prediction is bearish (spot-only)."""
+    def test_generate_signal_bearish_returns_short_when_enabled(self):
+        """Bearish predictions should produce SELL signal when shorts are enabled."""
         from engine.decision import DecisionEngine
         fetcher = make_mock_fetcher(current_price=100.0)
         predictor = make_mock_predictor(prob_up=0.3, prob_down=0.7, confidence=0.75)
         engine = DecisionEngine(fetcher, predictor)
         signal = engine.generate_signal()
-        assert signal is None
+        assert signal is not None
+        assert signal.side == "SELL"
 
     def test_low_confidence_filtered(self):
         """Low-confidence predictions should be filtered out."""
@@ -302,7 +307,7 @@ class TestDecisionEngine:
         predictor = make_mock_predictor()
         engine = DecisionEngine(fetcher, predictor)
         engine.update_thresholds({"confidence_threshold": 0.1})
-        assert engine.confidence_threshold >= 0.5  # Clamped to min
+        assert engine.confidence_threshold >= 0.4  # Clamped to min
         engine.update_thresholds({"confidence_threshold": 0.99})
         assert engine.confidence_threshold <= 0.95  # Clamped to max
 
@@ -325,7 +330,7 @@ class TestPositionOpening:
         executor = PaperExecutor(fetcher=fetcher, starting_balance=10000.0, db_path=tmp.name)
 
         signal = TradeSignal(
-            pair="BTC-USDT", side="BUY", entry_price=100.01,
+            pair="XRP-USDT", side="BUY", entry_price=100.01,
             stop_price=98.0, target_price=104.0, confidence=0.75,
             expected_move=0.02, prob_up=0.7, prob_down=0.3,
             risk_reward=2.0, atr=1.0, volatility_regime="normal",
@@ -342,7 +347,7 @@ class TestPositionOpening:
         trade = session.query(Trade).filter(Trade.trade_id == trade_id).first()
         assert trade is not None
         assert trade.status == "open"
-        assert trade.pair == "BTC-USDT"
+        assert trade.pair == "XRP-USDT"
         assert trade.entry_price > 0
         assert trade.stop_price == 98.0
         assert trade.target_price == 104.0
@@ -360,7 +365,7 @@ class TestPositionOpening:
         executor = PaperExecutor(fetcher=fetcher, starting_balance=10000.0, db_path=tmp.name)
 
         signal = TradeSignal(
-            pair="BTC-USDT", side="BUY", entry_price=100.0,
+            pair="XRP-USDT", side="BUY", entry_price=100.0,
             stop_price=98.0, target_price=104.0, confidence=0.75,
             expected_move=0.02, prob_up=0.7, prob_down=0.3,
             risk_reward=2.0, atr=1.0, volatility_regime="normal",
@@ -386,7 +391,7 @@ class TestPositionOpening:
 class TestPositionClosing:
     """Test that positions close correctly at TP, SL, and other conditions."""
 
-    def _setup_open_trade(self, session, pair="BTC-USDT", entry_price=100.0,
+    def _setup_open_trade(self, session, pair="XRP-USDT", entry_price=100.0,
                           stop_price=98.0, target_price=104.0, qty=1.0):
         """Insert an open trade into the database."""
         trade = Trade(
@@ -420,9 +425,8 @@ class TestPositionClosing:
         tmp.close()
         from execution.paper_executor import PaperExecutor
         executor = PaperExecutor(fetcher=fetcher, starting_balance=10000.0, db_path=tmp.name)
-        # Pre-populate paper position so sell doesn't fail
-        executor._positions["BTC-USDT"] = {"quantity": 1.0, "avg_entry_price": 100.0}
-        executor._persist_state()
+        # Open matching paper position so executor can close it.
+        executor.buy("XRP-USDT", qty=1.0, price=100.0)
 
         predictor = make_mock_predictor()
         monitor = PositionMonitor(fetcher, executor, predictor)
@@ -456,8 +460,7 @@ class TestPositionClosing:
         tmp.close()
         from execution.paper_executor import PaperExecutor
         executor = PaperExecutor(fetcher=fetcher, starting_balance=10000.0, db_path=tmp.name)
-        executor._positions["BTC-USDT"] = {"quantity": 1.0, "avg_entry_price": 100.0}
-        executor._persist_state()
+        executor.buy("XRP-USDT", qty=1.0, price=100.0)
 
         predictor = make_mock_predictor()
         monitor = PositionMonitor(fetcher, executor, predictor)
@@ -489,8 +492,7 @@ class TestPositionClosing:
         tmp.close()
         from execution.paper_executor import PaperExecutor
         executor = PaperExecutor(fetcher=fetcher, starting_balance=10000.0, db_path=tmp.name)
-        executor._positions["BTC-USDT"] = {"quantity": 1.0, "avg_entry_price": 100.0}
-        executor._persist_state()
+        executor.buy("XRP-USDT", qty=1.0, price=100.0)
 
         # Mock predictor to avoid model re-evaluation triggering close
         predictor = make_mock_predictor(prob_up=0.7, prob_down=0.3, confidence=0.75)
@@ -522,8 +524,7 @@ class TestPositionClosing:
         executor = PaperExecutor(
             fetcher=fetcher, starting_balance=10000.0, fee_rate=0.001, db_path=tmp.name
         )
-        executor._positions["BTC-USDT"] = {"quantity": 2.0, "avg_entry_price": 100.0}
-        executor._persist_state()
+        executor.buy("XRP-USDT", qty=2.0, price=100.0)
 
         predictor = make_mock_predictor()
         monitor = PositionMonitor(fetcher, executor, predictor)
@@ -556,8 +557,7 @@ class TestPositionClosing:
         tmp.close()
         from execution.paper_executor import PaperExecutor
         executor = PaperExecutor(fetcher=fetcher, starting_balance=10000.0, db_path=tmp.name)
-        executor._positions["BTC-USDT"] = {"quantity": 1.0, "avg_entry_price": 100.0}
-        executor._persist_state()
+        executor.buy("XRP-USDT", qty=1.0, price=100.0)
 
         # Strong bearish signal (prob_down > 0.75, confidence > 0.6)
         predictor = make_mock_predictor(prob_up=0.2, prob_down=0.8, confidence=0.7)
@@ -610,8 +610,7 @@ class TestManualCloseAll:
         from execution.paper_executor import PaperExecutor
         executor = PaperExecutor(fetcher=fetcher, starting_balance=10000.0, db_path=tmp.name)
         for i in range(3):
-            executor._positions[f"PAIR{i}-USDT"] = {"quantity": 1.0, "avg_entry_price": 100.0}
-        executor._persist_state()
+            executor.buy(f"PAIR{i}-USDT", qty=1.0, price=100.0)
 
         predictor = make_mock_predictor()
         monitor = PositionMonitor(fetcher, executor, predictor)
@@ -734,7 +733,7 @@ class TestFeedbackLoop:
         session = patch_db()
         trade = Trade(
             trade_id="win_001",
-            pair="BTC-USDT",
+            pair="XRP-USDT",
             side="BUY",
             entry_time=datetime.utcnow() - timedelta(hours=1),
             exit_time=datetime.utcnow(),
@@ -769,7 +768,7 @@ class TestFeedbackLoop:
         session = patch_db()
         trade = Trade(
             trade_id="loss_001",
-            pair="BTC-USDT",
+            pair="XRP-USDT",
             side="BUY",
             entry_time=datetime.utcnow() - timedelta(hours=1),
             exit_time=datetime.utcnow(),
@@ -844,7 +843,7 @@ class TestAPIServer:
         session = get_session()
         trade = Trade(
             trade_id="api_test_001",
-            pair="BTC-USDT",
+            pair="XRP-USDT",
             side="BUY",
             entry_time=datetime.utcnow(),
             entry_price=100.0,
@@ -1061,7 +1060,7 @@ class TestEndToEndSimulation:
         trade_ids = []
         for i in range(3):
             signal = TradeSignal(
-                pair="BTC-USDT", side="BUY", entry_price=100.0 + i,
+                pair="XRP-USDT", side="BUY", entry_price=100.0 + i,
                 stop_price=98.0, target_price=104.0 + i, confidence=0.75,
                 expected_move=0.02, prob_up=0.7, prob_down=0.3,
                 risk_reward=2.0, atr=1.0, volatility_regime="normal",
@@ -1170,7 +1169,7 @@ class TestExecutionUtilities:
         tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         tmp.close()
         executor = PaperExecutor(fetcher=fetcher, db_path=tmp.name)
-        rounded = executor.round_price(123.456789, "BTC-USDT")
+        rounded = executor.round_price(123.456789, "XRP-USDT")
         assert rounded == 123.45
         os.unlink(tmp.name)
 
@@ -1182,7 +1181,7 @@ class TestExecutionUtilities:
         tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         tmp.close()
         executor = PaperExecutor(fetcher=fetcher, db_path=tmp.name)
-        rounded = executor.round_quantity(1.23456789, "BTC-USDT")
+        rounded = executor.round_quantity(1.23456789, "XRP-USDT")
         assert rounded == 1.23456
         os.unlink(tmp.name)
 
@@ -1195,7 +1194,7 @@ class TestExecutionUtilities:
         tmp.close()
         executor = PaperExecutor(fetcher=fetcher, db_path=tmp.name)
         signal = TradeSignal(
-            pair="BTC-USDT", side="BUY", entry_price=100.0,
+            pair="XRP-USDT", side="BUY", entry_price=100.0,
             stop_price=100.0,  # Same as entry = zero distance
             target_price=104.0, confidence=0.75,
             expected_move=0.02, prob_up=0.7, prob_down=0.3,
@@ -1211,3 +1210,4 @@ class TestExecutionUtilities:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])
+

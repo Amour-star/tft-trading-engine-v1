@@ -168,7 +168,7 @@ def check_kucoin_api():
             "ok_auth=False\n"
             "err=''\n"
             "try:\n"
-            "    t=f.market.get_ticker('BTC-USDT')\n"
+            "    t=f.market.get_ticker('XRP-USDT')\n"
             "    ok_market=float(t.get('price',0))>0\n"
             "except Exception as e:\n"
             "    err=f'PUBLIC:{e}'\n"
@@ -384,5 +384,6 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         sys.exit(1)
+
 
 

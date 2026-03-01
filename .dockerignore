@@ -1,20 +1,33 @@
 .git
 .gitignore
+.env
+.env.*
+*.pem
+*.key
 
 # Local Python env and caches
 venv/
+.venv/
+.venv311/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
+.tox/
+dist/
+build/
+*.egg-info/
 
 # Local runtime artifacts
 logs/
 saved_models/
 data/historical/
 *.log
+lightning_logs/
+tmp_*/
 
 # Editor/system artifacts
 .vscode/

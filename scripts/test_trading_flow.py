@@ -4,7 +4,7 @@ Run this to diagnose where signals are being blocked.
 
 Usage:
     python scripts/test_trading_flow.py
-    python scripts/test_trading_flow.py --pair BTC-USDT
+    python scripts/test_trading_flow.py --pair XRP-USDT
     python scripts/test_trading_flow.py --all-pairs
 """
 from __future__ import annotations
@@ -118,7 +118,7 @@ def test_single_pair(
 
 def main():
     parser = argparse.ArgumentParser(description="Test trading flow diagnostics")
-    parser.add_argument("--pair", type=str, default="BTC-USDT", help="Pair to test")
+    parser.add_argument("--pair", type=str, default="XRP-USDT", help="Pair to test")
     parser.add_argument("--all-pairs", action="store_true", help="Test all top pairs")
     parser.add_argument("--model", type=str, help="Model version to load")
     args = parser.parse_args()
@@ -147,7 +147,7 @@ def main():
     # Pre-fetch BTC data
     logger.info("Fetching BTC reference data...")
     btc_df = fetcher.fetch_klines(
-        "BTC-USDT", "15min",
+        "XRP-USDT", "15min",
         start_dt=datetime.utcnow() - timedelta(hours=80),
     )
     logger.info(f"BTC data: {len(btc_df)} rows")
@@ -201,3 +201,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+__test__ = False  # Prevent pytest from collecting this script as a unit test.
+

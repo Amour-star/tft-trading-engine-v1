@@ -1,3 +1,5 @@
-from config.settings import settings
+"""Configuration package exports."""
 
-__all__ = ["settings"]
+from . import settings as settings_module
+
+__all__ = ["settings_module"]

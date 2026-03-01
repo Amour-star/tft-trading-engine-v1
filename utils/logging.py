@@ -5,7 +5,9 @@ All components use this for consistent, parseable log output.
 from __future__ import annotations
 
 import json
+import logging
 import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict
 
@@ -35,19 +37,22 @@ def _json_sink(message: Any) -> None:
 
 def setup_logging() -> None:
     """Configure logging for the entire application."""
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     log_dir = settings.log_dir
     log_dir.mkdir(parents=True, exist_ok=True)
 
     # Remove default handler
     logger.remove()
 
-    # Console - human readable
+    # Console - structured JSON to stdout
     logger.add(
         sys.stdout,
         level=settings.log_level,
-        format="<green>{time:HH:mm:ss}</green> | <level>{level:<8}</level> | "
-               "<cyan>{module}</cyan>:<cyan>{function}</cyan> - {message}",
-        colorize=True,
+        serialize=True,
     )
 
     # JSON file - structured, parseable
@@ -59,6 +64,21 @@ def setup_logging() -> None:
         rotation="1 day",
         retention="30 days",
         compression="gz",
+    )
+
+    # Production rotating logs (20MB/file, 10 backups)
+    rotating_handler = RotatingFileHandler(
+        str(log_dir / "engine.log"),
+        maxBytes=20 * 1024 * 1024,
+        backupCount=10,
+        encoding="utf-8",
+    )
+    rotating_handler.setLevel(logging.INFO)
+    logger.add(
+        rotating_handler,
+        level="INFO",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {module}:{function}:{line} | {message}",
+        enqueue=True,
     )
 
     # Trade-specific log

@@ -20,7 +20,7 @@ def compute_features(df: pd.DataFrame, btc_df: Optional[pd.DataFrame] = None) ->
     df : pd.DataFrame
         OHLCV DataFrame with columns: timestamp, open, high, low, close, volume
     btc_df : pd.DataFrame, optional
-        BTC-USDT OHLCV for correlation/dominance features
+        Reference-asset OHLCV for correlation features
 
     Returns
     -------
@@ -139,9 +139,18 @@ def compute_features(df: pd.DataFrame, btc_df: Optional[pd.DataFrame] = None) ->
     df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
     df["macd_hist"] = df["macd"] - df["macd_signal"]
 
-    # ---- Forward fill and handle NaN ----
+    # ---- Final NaN / inf safety for model compatibility ----
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
     df.ffill(inplace=True)
     df.bfill(inplace=True)
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    if len(numeric_cols) > 0:
+        df[numeric_cols] = df[numeric_cols].fillna(0.0)
+    categorical_cols = [
+        c for c in ["volatility_regime", "market_regime", "session"] if c in df.columns
+    ]
+    for col in categorical_cols:
+        df[col] = df[col].fillna("unknown").astype(str)
 
     logger.debug(f"Computed {len(df.columns)} features for {len(df)} rows")
     return df

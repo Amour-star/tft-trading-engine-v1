@@ -31,6 +31,8 @@ class BacktestTrade:
     pnl_pct: float = 0.0
     r_multiple: float = 0.0
     confidence: float = 0.0
+    ai_score: float = 0.0
+    ai_confidence: float = 0.0
 
 
 @dataclass
@@ -76,6 +78,7 @@ class Backtester:
         df: pd.DataFrame,
         signals: List[Dict[str, Any]],
         risk_per_trade: float = 0.01,
+        rl_manager: Optional[Any] = None,
     ) -> BacktestResult:
         """
         Run backtest on historical data with generated signals.
@@ -99,7 +102,7 @@ class Backtester:
             if balance <= 0:
                 break
 
-            trade = self._simulate_trade(df, signal, balance, risk_per_trade)
+            trade = self._simulate_trade(df, signal, balance, risk_per_trade, rl_manager=rl_manager)
             if trade is None:
                 continue
 
@@ -175,6 +178,7 @@ class Backtester:
         signal: Dict[str, Any],
         balance: float,
         risk_pct: float,
+        rl_manager: Optional[Any] = None,
     ) -> Optional[BacktestTrade]:
         """Simulate a single trade with realistic costs."""
         entry_time = signal["timestamp"]
@@ -195,6 +199,9 @@ class Backtester:
             return None
         risk_amount = balance * risk_pct
         quantity = risk_amount / stop_distance
+        avg_entry_price = entry_price
+        realized_partial_pnl = 0.0
+        adjustment_commission = 0.0
         cost = quantity * entry_price * (1 + commission_rate)
         if cost > balance * 0.95:
             quantity = (balance * 0.90) / (entry_price * (1 + commission_rate))
@@ -210,6 +217,57 @@ class Backtester:
         exit_reason = ""
 
         for _, row in future_df.iterrows():
+            row_close = float(row.get("close", entry_price))
+            row_atr = float(row.get("atr_14", 0.0))
+
+            if rl_manager is not None:
+                try:
+                    rl_state = {
+                        "entry_price": avg_entry_price,
+                        "current_price": row_close,
+                        "quantity": quantity,
+                        "unrealized_pnl": (row_close - avg_entry_price) * quantity,
+                        "time_in_trade": float((row["timestamp"] - entry_time).total_seconds() / 60.0),
+                        "rsi": float(row.get("rsi_14", row.get("rsi", 50.0))),
+                        "ema_20": float(row.get("ema_21", row.get("ema_20", row_close))),
+                        "volatility": float(row.get("volatility_20", row.get("volatility", 0.0))),
+                    }
+                    rl_action = rl_manager.step(rl_state)
+
+                    if getattr(rl_action, "should_exit", False):
+                        exit_price = row_close
+                        exit_time = row["timestamp"]
+                        exit_reason = "rl_exit"
+                        break
+
+                    action_name = getattr(rl_action, "action", "hold")
+                    if action_name == "decrease" and quantity > 0:
+                        reduce_qty = quantity * 0.25
+                        if reduce_qty > 0:
+                            realized_partial_pnl += (row_close - avg_entry_price) * reduce_qty
+                            adjustment_commission += row_close * reduce_qty * commission_rate
+                            quantity -= reduce_qty
+                            if quantity <= 0:
+                                exit_price = row_close
+                                exit_time = row["timestamp"]
+                                exit_reason = "rl_flattened"
+                                break
+                    elif action_name == "increase" and quantity > 0:
+                        add_qty = quantity * 0.15
+                        if add_qty > 0:
+                            adjustment_commission += row_close * add_qty * commission_rate
+                            new_qty = quantity + add_qty
+                            avg_entry_price = ((avg_entry_price * quantity) + (row_close * add_qty)) / new_qty
+                            quantity = new_qty
+
+                    if row_atr > 0:
+                        stop_mult = float(getattr(rl_action, "stop_atr_multiplier", 2.0))
+                        rl_stop = row_close - row_atr * stop_mult
+                        if rl_stop > stop_price and rl_stop < row_close:
+                            stop_price = rl_stop
+                except Exception:
+                    pass
+
             # Check stop hit (using low)
             if row["low"] <= stop_price:
                 exit_price = stop_price - slippage  # Slippage on exit too
@@ -230,11 +288,11 @@ class Backtester:
             exit_reason = "end_of_data"
 
         # Calculate PnL
-        gross_pnl = (exit_price - entry_price) * quantity
-        commission_total = (entry_price + exit_price) * quantity * commission_rate
+        gross_pnl = realized_partial_pnl + (exit_price - avg_entry_price) * quantity
+        commission_total = (entry_price + exit_price) * quantity * commission_rate + adjustment_commission
         net_pnl = gross_pnl - commission_total
-        pnl_pct = (exit_price - entry_price) / entry_price
-        r_multiple = (exit_price - entry_price) / stop_distance if stop_distance > 0 else 0
+        pnl_pct = (exit_price - avg_entry_price) / avg_entry_price if avg_entry_price > 0 else 0
+        r_multiple = (exit_price - avg_entry_price) / stop_distance if stop_distance > 0 else 0
 
         return BacktestTrade(
             pair=signal.get("pair", "UNKNOWN"),
@@ -250,6 +308,8 @@ class Backtester:
             pnl_pct=pnl_pct,
             r_multiple=r_multiple,
             confidence=signal.get("confidence", 0),
+            ai_score=signal.get("ai_score", signal.get("confidence", 0)),
+            ai_confidence=signal.get("ai_confidence", signal.get("confidence", 0)),
         )
 
     # ------------------------------------------------------------------
@@ -263,6 +323,7 @@ class Backtester:
         window_size: int = 2000,
         step_size: int = 500,
         risk_per_trade: float = 0.01,
+        rl_manager: Optional[Any] = None,
     ) -> BacktestResult:
         """
         Walk-forward backtest.
@@ -286,7 +347,7 @@ class Backtester:
             if not signals:
                 continue
 
-            result = self.run(test_df, signals, risk_per_trade)
+            result = self.run(test_df, signals, risk_per_trade, rl_manager=rl_manager)
             all_trades.extend(result.trades)
 
         # Aggregate

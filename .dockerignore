@@ -4,6 +4,9 @@
 .env.*
 *.pem
 *.key
+state/*
+tests/
+notebooks/
 
 # Local Python env and caches
 venv/

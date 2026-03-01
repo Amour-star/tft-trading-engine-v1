@@ -9,10 +9,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
-import joblib
 import numpy as np
 
 from data.database import get_latest_model_version
+
+try:
+    import joblib
+except Exception:  # pragma: no cover - fallback path for lean runtime images
+    joblib = None  # type: ignore[assignment]
 
 
 VOLATILITY_REGIME_MAP = {
@@ -74,7 +78,20 @@ class XGBoostMetaModel:
             self.model_version = "xgb_meta_fallback"
             return False
 
-        artifact = joblib.load(artifact_path)
+        if joblib is None:
+            self.model = None
+            self.feature_columns = self.default_feature_columns()
+            self.model_version = "xgb_meta_fallback"
+            return False
+
+        try:
+            artifact = joblib.load(artifact_path)
+        except Exception:
+            self.model = None
+            self.feature_columns = self.default_feature_columns()
+            self.model_version = "xgb_meta_fallback"
+            return False
+
         self.model = artifact.get("model")
         self.feature_columns = artifact.get("feature_columns", self.default_feature_columns())
         self.model_version = artifact.get("model_version", artifact_path.stem)

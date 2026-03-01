@@ -93,11 +93,16 @@ class PPOPositionManager:
             self.model_version = "ppo_fallback"
             return False
 
-        PPO = _import_ppo()
-        self.model = PPO.load(str(path))
-        self.model_version = path.stem
-        self.model_path = path
-        return True
+        try:
+            PPO = _import_ppo()
+            self.model = PPO.load(str(path))
+            self.model_version = path.stem
+            self.model_path = path
+            return True
+        except Exception:
+            self.model = None
+            self.model_version = "ppo_fallback"
+            return False
 
     def _observation(self, state: Dict[str, Any]) -> np.ndarray:
         current_price = _safe_float(state.get("current_price", state.get("entry_price", 0.0)))

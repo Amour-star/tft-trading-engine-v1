@@ -1,0 +1,62 @@
+2026-03-01T22:09:25.864500Z | monitor_started | Engine monitor initialized
+2026-03-01T22:09:26.072502Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-01T22:09:36.196032Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-01T22:09:36.281863Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['No trades for > 6 hours']
+2026-03-01T22:09:45.981626Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-01T22:09:46.112910Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-01T22:09:55.503534Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-01T22:09:55.592719Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['No trades for > 6 hours']
+2026-03-01T22:10:08.737819Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-01T22:11:00.551318Z | monitor_started | Engine monitor initialized
+2026-03-01T22:11:00.644171Z | trades_db_linked | btc: /app/state/btc/trades.db -> tft_engine.db
+2026-03-01T22:11:00.688707Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-01T22:11:08.545419Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-01T22:11:08.809037Z | trades_db_linked | eth: /app/state/eth/trades.db -> tft_engine.db
+2026-03-01T22:11:08.895557Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['No trades for > 6 hours']
+2026-03-01T22:11:14.698675Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-01T22:11:14.796711Z | trades_db_linked | xrp: /app/state/xrp/trades.db -> tft_engine.db
+2026-03-01T22:11:14.842264Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-01T22:11:18.598419Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-01T22:11:18.680469Z | trades_db_linked | doge: /app/state/doge/trades.db -> tft_engine.db
+2026-03-01T22:11:18.718431Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['No trades for > 6 hours']
+2026-03-01T22:11:21.767095Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-01T22:11:36.948734Z | monitor_started | Engine monitor initialized
+2026-03-01T22:11:37.066023Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-01T22:11:43.248293Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-01T22:11:43.395731Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['No trades for > 6 hours']
+2026-03-01T22:11:48.390727Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-01T22:11:49.101809Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-01T22:11:54.479872Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-01T22:11:54.620745Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['No trades for > 6 hours']
+2026-03-01T22:12:00.331405Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-01T22:12:18.318966Z | monitor_started | Engine monitor initialized
+2026-03-01T22:12:18.483446Z | trades_db_copied | btc: /app/state/btc/trades.db from /app/state/btc/tft_engine.db
+2026-03-01T22:12:18.518708Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-01T22:12:20.963599Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-01T22:12:21.032929Z | trades_db_copied | eth: /app/state/eth/trades.db from /app/state/eth/tft_engine.db
+2026-03-01T22:12:21.056787Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['No trades for > 6 hours']
+2026-03-01T22:12:23.751399Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-01T22:12:23.842188Z | trades_db_copied | xrp: /app/state/xrp/trades.db from /app/state/xrp/tft_engine.db
+2026-03-01T22:12:23.869576Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-01T22:12:26.384460Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-01T22:12:26.489019Z | trades_db_copied | doge: /app/state/doge/trades.db from /app/state/doge/tft_engine.db
+2026-03-01T22:12:26.518899Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['No trades for > 6 hours']
+2026-03-01T22:12:31.375171Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-01T22:55:13.588365Z | monitor_started | Engine monitor initialized
+2026-03-01T22:55:13.782278Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-01T22:55:47.369712Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-01T22:55:47.543139Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['No trades for > 6 hours']
+2026-03-01T22:55:51.766867Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-01T22:55:51.871335Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-01T22:55:55.961736Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-01T22:55:56.079689Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['No trades for > 6 hours']
+2026-03-01T22:55:59.936761Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-01T23:25:13.973149Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-01T23:25:28.362059Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-01T23:25:28.378201Z | tft_disabled | btc: /app/state/btc/tft_disabled.flag
+2026-03-01T23:25:59.160592Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-01T23:25:59.272042Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['No trades for > 6 hours']
+2026-03-01T23:26:10.468221Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-01T23:26:10.477037Z | tft_disabled | eth: /app/state/eth/tft_disabled.flag
+2026-03-01T23:26:41.280022Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-01T23:26:41.354618Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']

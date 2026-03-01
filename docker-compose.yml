@@ -1,81 +1,4 @@
 services:
-  engine:
-    build:
-      context: .
-      args:
-        USE_CUDA: ${USE_CUDA:-false}
-    image: tft-trading-engine:prod
-    gpus: all
-    container_name: tft-engine
-    command: ["python", "scripts/run_engine.py"]
-    env_file: .env
-    environment:
-      SQLITE_PATH: /app/state/tft_engine.db
-      PAPER_DB_PATH: /app/state/paper_trading.db
-      ENGINE_LOCK_FILE: /app/state/tft_engine.lock
-      REDIS_HOST: redis
-    volumes:
-      - sqlite_data:/app/state
-      - logs_data:/app/logs
-      - ./saved_models:/app/saved_models:ro
-    restart: unless-stopped
-    depends_on:
-      - redis
-
-  api:
-    image: tft-trading-engine:prod
-    container_name: tft-api
-    command:
-      [
-        "python",
-        "-m",
-        "uvicorn",
-        "dashboard.api:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8000",
-      ]
-    env_file: .env
-    environment:
-      SQLITE_PATH: /app/state/tft_engine.db
-      PAPER_DB_PATH: /app/state/paper_trading.db
-      ENGINE_LOCK_FILE: /app/state/tft_engine.lock
-      REDIS_HOST: redis
-    volumes:
-      - sqlite_data:/app/state
-      - logs_data:/app/logs
-      - ./saved_models:/app/saved_models:ro
-    ports:
-      - "8000:8000"
-    depends_on:
-      engine:
-        condition: service_started
-
-  dashboard:
-    image: tft-trading-engine:prod
-    container_name: tft-dashboard
-    command:
-      [
-        "python",
-        "-m",
-        "streamlit",
-        "run",
-        "dashboard/streamlit_app.py",
-        "--server.port",
-        "8501",
-        "--server.address",
-        "0.0.0.0",
-      ]
-    env_file: .env
-    environment:
-      API_BASE: http://api:8000/api
-    ports:
-      - "8501:8501"
-    depends_on:
-      api:
-        condition: service_started
-
   redis:
     image: redis:7-alpine
     container_name: tft-redis
@@ -83,7 +6,273 @@ services:
     volumes:
       - redis_data:/data
 
+  engine-btc:
+    build:
+      context: .
+      dockerfile: Dockerfile.engine
+    image: tft-engine-runtime:latest
+    command: ["python3.11", "scripts/run_engine.py"]
+    env_file: .env
+    environment:
+      SYMBOL: BTC-USDT
+      SPOT_ONLY_MODE: "true"
+      ORACLE_ENABLED: "false"
+      REDIS_HOST: redis
+      SQLITE_PATH: /app/state/tft_engine.db
+      PAPER_DB_PATH: /app/state/paper_trading.db
+      ENGINE_LOCK_FILE: /app/state/tft_engine.lock
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - ./state/btc:/app/state
+      - ./saved_models:/app/saved_models:ro
+    restart: unless-stopped
+    depends_on:
+      - redis
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
+  api-btc:
+    image: tft-engine-runtime:latest
+    command: ["python3.11", "-m", "uvicorn", "dashboard.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: .env
+    environment:
+      SYMBOL: BTC-USDT
+      ORACLE_ENABLED: "false"
+      REDIS_HOST: redis
+      SQLITE_PATH: /app/state/tft_engine.db
+      PAPER_DB_PATH: /app/state/paper_trading.db
+      ENGINE_LOCK_FILE: /app/state/tft_engine.lock
+    volumes:
+      - ./state/btc:/app/state
+      - ./saved_models:/app/saved_models:ro
+    ports:
+      - "8001:8000"
+    restart: unless-stopped
+    depends_on:
+      - engine-btc
+
+  engine-eth:
+    image: tft-engine-runtime:latest
+    command: ["python3.11", "scripts/run_engine.py"]
+    env_file: .env
+    environment:
+      SYMBOL: ETH-USDT
+      SPOT_ONLY_MODE: "true"
+      ORACLE_ENABLED: "false"
+      REDIS_HOST: redis
+      SQLITE_PATH: /app/state/tft_engine.db
+      PAPER_DB_PATH: /app/state/paper_trading.db
+      ENGINE_LOCK_FILE: /app/state/tft_engine.lock
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - ./state/eth:/app/state
+      - ./saved_models:/app/saved_models:ro
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - engine-btc
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
+  api-eth:
+    image: tft-engine-runtime:latest
+    command: ["python3.11", "-m", "uvicorn", "dashboard.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: .env
+    environment:
+      SYMBOL: ETH-USDT
+      ORACLE_ENABLED: "false"
+      REDIS_HOST: redis
+      SQLITE_PATH: /app/state/tft_engine.db
+      PAPER_DB_PATH: /app/state/paper_trading.db
+      ENGINE_LOCK_FILE: /app/state/tft_engine.lock
+    volumes:
+      - ./state/eth:/app/state
+      - ./saved_models:/app/saved_models:ro
+    ports:
+      - "8002:8000"
+    restart: unless-stopped
+    depends_on:
+      - engine-eth
+
+  engine-xrp:
+    image: tft-engine-runtime:latest
+    command: ["python3.11", "scripts/run_engine.py"]
+    env_file: .env
+    environment:
+      SYMBOL: XRP-USDT
+      SPOT_ONLY_MODE: "true"
+      ORACLE_ENABLED: "false"
+      REDIS_HOST: redis
+      SQLITE_PATH: /app/state/tft_engine.db
+      PAPER_DB_PATH: /app/state/paper_trading.db
+      ENGINE_LOCK_FILE: /app/state/tft_engine.lock
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - ./state/xrp:/app/state
+      - ./saved_models:/app/saved_models:ro
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - engine-btc
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
+  api-xrp:
+    image: tft-engine-runtime:latest
+    command: ["python3.11", "-m", "uvicorn", "dashboard.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: .env
+    environment:
+      SYMBOL: XRP-USDT
+      ORACLE_ENABLED: "false"
+      REDIS_HOST: redis
+      SQLITE_PATH: /app/state/tft_engine.db
+      PAPER_DB_PATH: /app/state/paper_trading.db
+      ENGINE_LOCK_FILE: /app/state/tft_engine.lock
+    volumes:
+      - ./state/xrp:/app/state
+      - ./saved_models:/app/saved_models:ro
+    ports:
+      - "8003:8000"
+    restart: unless-stopped
+    depends_on:
+      - engine-xrp
+
+  engine-doge:
+    image: tft-engine-runtime:latest
+    command: ["python3.11", "scripts/run_engine.py"]
+    env_file: .env
+    environment:
+      SYMBOL: DOGE-USDT
+      SPOT_ONLY_MODE: "true"
+      ORACLE_ENABLED: "false"
+      REDIS_HOST: redis
+      SQLITE_PATH: /app/state/tft_engine.db
+      PAPER_DB_PATH: /app/state/paper_trading.db
+      ENGINE_LOCK_FILE: /app/state/tft_engine.lock
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - ./state/doge:/app/state
+      - ./saved_models:/app/saved_models:ro
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - engine-btc
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
+  api-doge:
+    image: tft-engine-runtime:latest
+    command: ["python3.11", "-m", "uvicorn", "dashboard.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: .env
+    environment:
+      SYMBOL: DOGE-USDT
+      ORACLE_ENABLED: "false"
+      REDIS_HOST: redis
+      SQLITE_PATH: /app/state/tft_engine.db
+      PAPER_DB_PATH: /app/state/paper_trading.db
+      ENGINE_LOCK_FILE: /app/state/tft_engine.lock
+    volumes:
+      - ./state/doge:/app/state
+      - ./saved_models:/app/saved_models:ro
+    ports:
+      - "8004:8000"
+    restart: unless-stopped
+    depends_on:
+      - engine-doge
+
+  training:
+    profiles: ["training"]
+    build:
+      context: .
+      dockerfile: Dockerfile.training
+    image: tft-training:latest
+    command: ["bash", "-lc", "python3.11 scripts/train_model.py && python3.11 scripts/train_meta_model.py && python3.11 scripts/train_rl_manager.py"]
+    env_file: .env
+    environment:
+      ORACLE_ENABLED: "false"
+      REDIS_HOST: redis
+      SQLITE_PATH: /app/state/tft_engine.db
+      PAPER_DB_PATH: /app/state/paper_trading.db
+      ENGINE_LOCK_FILE: /app/state/tft_engine.lock
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - ./state/training:/app/state
+      - ./saved_models:/app/saved_models
+    depends_on:
+      - redis
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    image: tft-dashboard:latest
+    env_file: .env
+    environment:
+      SYMBOL: BTC-USDT
+      API_BASE: http://api-btc:8000/api
+      API_BASE_BTC: http://api-btc:8000/api
+      API_BASE_ETH: http://api-eth:8000/api
+      API_BASE_XRP: http://api-xrp:8000/api
+      API_BASE_DOGE: http://api-doge:8000/api
+    volumes:
+      - ./state:/app/state:ro
+    ports:
+      - "8501:8501"
+    restart: unless-stopped
+    depends_on:
+      - api-btc
+      - api-eth
+      - api-xrp
+      - api-doge
+
+  engine-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile.engine
+    image: tft-engine-runtime:latest
+    container_name: tft-engine-monitor
+    command: ["python3.11", "scripts/engine_monitor.py"]
+    env_file: .env
+    environment:
+      ORACLE_ENABLED: "false"
+    user: "0:0"
+    volumes:
+      - ./state:/app/state
+      - ./scripts:/app/scripts:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+    depends_on:
+      - engine-btc
+      - engine-eth
+      - engine-xrp
+      - engine-doge
+
 volumes:
-  sqlite_data:
-  logs_data:
   redis_data:

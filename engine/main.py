@@ -11,6 +11,7 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
 from loguru import logger
@@ -101,6 +102,9 @@ def _finite_or_none(value: object, digits: Optional[int] = None) -> Optional[flo
     if not math.isfinite(numeric):
         return None
     return round(numeric, digits) if digits is not None else numeric
+
+
+MAX_TFT_RETRIES = 1
 
 
 class TradingEngine:
@@ -195,6 +199,21 @@ class TradingEngine:
         self._health_started_at = time.monotonic()
         self._health_server: Optional[HealthServer] = None
         self._start_health_server()
+
+        self._tft_retries: int = 0
+        self._tft_disabled_notice_emitted: bool = False
+        self._symbol_slug: str = str(os.getenv("SYMBOL", XRP_ONLY_SYMBOL)).split("-")[0].lower()
+        self._tft_disable_flag_path = Path(
+            os.getenv("TFT_DISABLE_FLAG_PATH", "/app/state/tft_disabled.flag")
+        )
+        self._tft_disabled = self._tft_disable_flag_path.exists()
+        if self._tft_disabled:
+            logger.warning(
+                "TFT disabled by flag for {}: {}",
+                self._symbol_slug,
+                self._tft_disable_flag_path,
+            )
+            self._apply_xgb_fallback_mode()
 
         self._state_lock = threading.Lock()
         self._cycle_in_progress: bool = False
@@ -475,6 +494,7 @@ class TradingEngine:
         """Run startup hooks after a model is successfully loaded."""
         if not self._model_supports_xrp():
             return False
+        self._tft_retries = 0
         self.safety.load_state()
         self.strategy_evolution.apply_to_decision(self.decision)
         self._save_engine_state("thresholds", self.decision.get_current_thresholds())
@@ -485,6 +505,9 @@ class TradingEngine:
         Ensure there is a loadable model.
         Tries existing checkpoints first, then optional auto-train bootstrap.
         """
+        if self._is_tft_disabled():
+            return False
+
         if self._load_latest_model():
             return True
 
@@ -514,6 +537,9 @@ class TradingEngine:
 
     def _load_latest_model(self) -> bool:
         """Try to load available models from newest to oldest."""
+        if self._is_tft_disabled():
+            return False
+
         models = TFTPredictor.list_models()
         if not models:
             return False
@@ -530,10 +556,87 @@ class TradingEngine:
                     continue
                 logger.info(f"Loaded model: {version}")
                 return True
+            except ImportError as exc:
+                self._on_tft_load_failure(version, exc, import_related=True)
+                return False
             except Exception as exc:
-                logger.error(f"Model load failed for {version}: {exc}")
+                message = str(exc).lower()
+                import_related = "pytorch-forecasting required" in message
+                self._on_tft_load_failure(version, exc, import_related=import_related)
+                if import_related:
+                    return False
 
         return False
+
+    def _on_tft_load_failure(self, version: str, exc: Exception, import_related: bool) -> None:
+        self._tft_retries += 1
+        if import_related:
+            logger.warning(
+                "TFT unavailable for model {} ({}). Switching to fallback mode.",
+                version,
+                exc,
+            )
+            self._apply_xgb_fallback_mode()
+        else:
+            logger.error("Model load failed for {}: {}", version, exc)
+
+        if self._tft_retries > MAX_TFT_RETRIES:
+            self._disable_tft_permanently(reason=f"retries_exceeded:{self._tft_retries}")
+
+    def _is_tft_disabled(self) -> bool:
+        if self._tft_disabled:
+            if not self._tft_disabled_notice_emitted:
+                logger.warning(
+                    "TFT is permanently disabled for {}. Using fallback mode only.",
+                    self._symbol_slug,
+                )
+                self._tft_disabled_notice_emitted = True
+            return True
+        if self._tft_disable_flag_path.exists():
+            self._tft_disabled = True
+            self._apply_xgb_fallback_mode()
+            if not self._tft_disabled_notice_emitted:
+                logger.warning(
+                    "Detected TFT disable flag for {}: {}",
+                    self._symbol_slug,
+                    self._tft_disable_flag_path,
+                )
+                self._tft_disabled_notice_emitted = True
+            return True
+        return False
+
+    def _disable_tft_permanently(self, reason: str) -> None:
+        if self._tft_disabled:
+            return
+        self._tft_disabled = True
+        self._apply_xgb_fallback_mode()
+        try:
+            self._tft_disable_flag_path.parent.mkdir(parents=True, exist_ok=True)
+            self._tft_disable_flag_path.write_text(
+                f"disabled_at={datetime.utcnow().isoformat()}Z\nreason={reason}\n",
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.error("Failed to write TFT disable flag: {}", exc)
+        logger.warning(
+            "TFT disabled permanently for {} after {} retries. Flag: {}",
+            self._symbol_slug,
+            self._tft_retries,
+            self._tft_disable_flag_path,
+        )
+
+    def _apply_xgb_fallback_mode(self) -> None:
+        try:
+            self.decision.update_thresholds(
+                {
+                    "tft_weight": 0.05,
+                    "xgb_weight": 0.80,
+                    "ppo_weight": 0.15,
+                }
+            )
+            self._save_engine_state("tft_disabled", True)
+        except Exception as exc:
+            logger.warning("Could not apply fallback agent weights: {}", exc)
 
     def _bootstrap_train_model(self) -> Optional[str]:
         """Train a starter model from local history, optionally fetching history first."""

@@ -8,6 +8,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -118,6 +119,10 @@ class DecisionEngine:
         self.xgb_weight = 0.40
         self.ppo_weight = 0.20
         self._normalize_agent_weights()
+        self._tft_disable_flag_path = Path(
+            os.getenv("TFT_DISABLE_FLAG_PATH", "/app/state/tft_disabled.flag")
+        )
+        self._tft_disable_warned = False
         if settings.trading.spot_only_mode:
             logger.info("Spot-only mode enabled: short signals are disabled")
 
@@ -264,6 +269,9 @@ class DecisionEngine:
         """
         Return model-supported pairs if predictor exposes vocabulary introspection.
         """
+        if self._is_tft_fallback_mode():
+            return {XRP_ONLY_SYMBOL}
+
         getter = getattr(self.predictor, "get_supported_pairs", None)
         if not callable(getter):
             raise RuntimeError("Predictor must expose get_supported_pairs() in XRP-only mode")
@@ -356,15 +364,19 @@ class DecisionEngine:
         # Run prediction
         prediction = self.predictor.predict(df, pair)
         if not bool(prediction.get("valid", True)):
-            return PairEvaluation(
-                pair=pair,
-                score=0.0,
-                prediction=prediction,
-                features={},
-                reasons=["Invalid TFT forecast (NaN/Inf or empty output)"],
-                disqualified=True,
-                disqualify_reason="Invalid prediction",
-            )
+            if self._is_tft_fallback_mode():
+                prediction = self._fallback_prediction_payload()
+                reasons.append("TFT disabled, using xgb_meta_fallback mode")
+            else:
+                return PairEvaluation(
+                    pair=pair,
+                    score=0.0,
+                    prediction=prediction,
+                    features={},
+                    reasons=["Invalid TFT forecast (NaN/Inf or empty output)"],
+                    disqualified=True,
+                    disqualify_reason="Invalid prediction",
+                )
 
         expected_move = float(prediction.get("expected_move", 0.0))
         if not np.isfinite(expected_move):
@@ -714,6 +726,34 @@ class DecisionEngine:
             },
             risk_per_trade=self.risk_per_trade,
         )
+
+    def _is_tft_fallback_mode(self) -> bool:
+        if self._tft_disable_flag_path.exists():
+            if not self._tft_disable_warned:
+                logger.warning("TFT disabled flag detected; using xgb_meta_fallback mode only.")
+                self._tft_disable_warned = True
+            return True
+        return False
+
+    @staticmethod
+    def _fallback_prediction_payload() -> Dict[str, Any]:
+        return {
+            "prob_up": 0.5,
+            "prob_down": 0.5,
+            "expected_move": 0.0,
+            "confidence": 0.5,
+            "valid": True,
+            "forecast_vector": [0.0] * 12,
+            "lower_bound": [0.0] * 12,
+            "upper_bound": [0.0] * 12,
+            "attention_stats": {
+                "mean": 0.0,
+                "std": 0.0,
+                "peak": 0.0,
+                "consistency": 0.0,
+            },
+            "model_version": "tft_disabled",
+        }
 
     def _build_reasoning(
         self,

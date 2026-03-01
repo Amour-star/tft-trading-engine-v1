@@ -18,7 +18,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from config.settings import XRP_ONLY_SYMBOL, settings
 
 try:
-    from kucoin_universal_sdk.client import KucoinClient
+    from kucoin.client import Market, Trade, User
 except Exception as exc:
     Market = Trade = User = None  # type: ignore[assignment]
     logger.warning(f"kucoin-python unavailable ({exc}). Using offline-safe mode.")
@@ -85,12 +85,7 @@ class KuCoinDataFetcher:
 
         if not self._offline_mode:
             try:
-                self.market = KucoinClient(
-                    key=cfg.api_key,
-                    secret=cfg.api_secret,
-                    passphrase=cfg.api_passphrase,
-                    base_url=url,
-                ) if Market else None
+                self.market = Market(url=url) if Market else None
                 self.trade_client = (
                     Trade(
                         key=cfg.api_key,

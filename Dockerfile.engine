@@ -1,0 +1,64 @@
+# syntax=docker/dockerfile:1
+
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04 AS builder
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      software-properties-common \
+      build-essential \
+      curl \
+      ca-certificates \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+      python3.11 \
+      python3.11-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.engine.txt /build/requirements.engine.txt
+
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11
+
+RUN python3.11 -m pip install --upgrade pip setuptools wheel && \
+    python3.11 -m pip wheel --wheel-dir /build/wheels -r /build/requirements.engine.txt && \
+    python3.11 -m pip install --no-index --find-links /build/wheels --target /opt/site-packages -r /build/requirements.engine.txt && \
+    rm -rf /build/wheels /root/.cache/pip
+
+ENV PYTHONPATH=/opt/site-packages
+RUN python3.11 -c "import importlib.metadata as m; import torch; assert str(torch.version.cuda).startswith('12.4'), f'torch cuda mismatch: {torch.version.cuda}'; bad=[d.metadata['Name'] for d in m.distributions(path=['/opt/site-packages']) if 'cu11' in d.metadata.get('Name','')]; assert not bad, f'Unexpected CUDA 11 wheels: {bad}'"
+
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04 AS runtime
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/opt/site-packages
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      software-properties-common \
+      curl \
+      ca-certificates \
+      libgomp1 \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+      python3.11 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /opt/site-packages /opt/site-packages
+COPY . /app
+
+RUN adduser --disabled-password --gecos "" --home /home/appuser --uid 10001 appuser && \
+    mkdir -p /app/logs /app/data /app/state /app/saved_models && \
+    chown -R appuser:appuser /app/logs /app/data /app/state /app/saved_models
+
+USER appuser
+
+EXPOSE 8000
+STOPSIGNAL SIGTERM
+CMD ["python3.11", "scripts/run_engine.py"]

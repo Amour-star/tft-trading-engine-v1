@@ -1,0 +1,63 @@
+# syntax=docker/dockerfile:1
+
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04 AS builder
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 \
+      python3-pip \
+      python3-venv \
+      ca-certificates \
+      libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m venv /opt/venv
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY requirements.runtime.txt /build/requirements.runtime.txt
+
+RUN python -m pip install --upgrade pip wheel setuptools && \
+    python -m pip wheel --wheel-dir /build/wheels -r /build/requirements.runtime.txt && \
+    python -m pip install --no-index --find-links /build/wheels -r /build/requirements.runtime.txt && \
+    rm -rf /build/wheels
+
+# Validate torch/cuda alignment and block old CUDA wheels.
+RUN python -c "import importlib.metadata as m; import torch; assert str(torch.version.cuda).startswith('12.4'), f'torch cuda mismatch: {torch.version.cuda}'; bad=[d.metadata['Name'] for d in m.distributions() if d.metadata.get('Name','').startswith('nvidia-') and 'cu11' in d.metadata.get('Name','')]; assert not bad, f'Unexpected CUDA 11 wheels: {bad}'"
+
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04 AS runtime
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 \
+      python3-venv \
+      bash \
+      curl \
+      libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY --from=builder /opt/venv /opt/venv
+COPY . /app
+
+RUN adduser --disabled-password --gecos "" --home /home/appuser --uid 10001 appuser && \
+    mkdir -p /app/logs /app/data /app/state /app/saved_models && \
+    chown -R appuser:appuser /app/logs /app/data /app/state /app/saved_models
+
+USER appuser
+
+EXPOSE 8000 8501
+STOPSIGNAL SIGTERM
+CMD ["python", "scripts/run_engine.py"]

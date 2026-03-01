@@ -456,6 +456,12 @@ class PaperExecutor(BaseExecutor):
             try:
                 market = self.fetcher.get_ticker(symbol)
                 mark_price = _safe_float(market.get("price"), entry_price)
+                ticker_source = str(market.get("source", "unknown"))
+                if settings.trading.paper_require_live_price and ticker_source == "synthetic":
+                    logger.bind(event="LIVE_PRICE_REQUIRED", pair=symbol, source=ticker_source).warning(
+                        "Skipping unrealized update due to synthetic ticker"
+                    )
+                    continue
             except Exception:
                 logger.bind(event="PNL_GUARD", pair=symbol).warning(
                     "Unable to fetch mark price, skipping unrealized update"
@@ -508,6 +514,10 @@ class PaperExecutor(BaseExecutor):
                 raise
 
             mark_price = _safe_float(resolved_ticker.get("price"), 0.0)
+            ticker_source = str(resolved_ticker.get("source", "unknown"))
+            if settings.trading.paper_require_live_price and ticker_source == "synthetic":
+                raise ValueError("Synthetic ticker rejected in PAPER mode")
+            logger.info(f"LIVE PRICE {symbol}: {mark_price:.8f} source={ticker_source}")
             last_price = self._last_prices.get(symbol)
             if not validate_price(symbol, mark_price, last_price):
                 raise ValueError("Invalid mark price")
@@ -649,6 +659,10 @@ class PaperExecutor(BaseExecutor):
                     raise
 
                 mark_price = _safe_float(market_ticker.get("price"), 0.0)
+                ticker_source = str(market_ticker.get("source", "unknown"))
+                if settings.trading.paper_require_live_price and ticker_source == "synthetic":
+                    raise ValueError("Synthetic ticker rejected in PAPER mode")
+                logger.info(f"LIVE PRICE {symbol}: {mark_price:.8f} source={ticker_source}")
                 last_price = self._last_prices.get(symbol)
                 if not validate_price(symbol, mark_price, last_price):
                     raise ValueError("Invalid mark price")
@@ -656,7 +670,7 @@ class PaperExecutor(BaseExecutor):
                 if qty <= 0:
                     raise ValueError("Invalid quantity")
 
-                fill_price = self._market_price(symbol, "sell", price)
+                fill_price = self._market_price(symbol, "sell", price, ticker=market_ticker)
                 if not validate_price(symbol, fill_price, last_price or mark_price):
                     raise ValueError("Invalid exit price")
                 if fill_price > 0:

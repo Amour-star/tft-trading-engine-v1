@@ -15,6 +15,7 @@ from data.features import compute_features
 from execution.base_executor import BaseExecutor
 from models.tft_model import TFTPredictor
 from utils.logging import log_trade
+from utils.pnl import calculate_realized_pnl
 
 
 class PositionMonitor:
@@ -314,7 +315,12 @@ class PositionMonitor:
             trade.pnl = (
                 float(realized_pnl) + partial_realized
                 if realized_pnl is not None
-                else side_mult * (exit_price - float(trade.entry_price)) * quantity + partial_realized
+                else calculate_realized_pnl(
+                    entry_price=float(trade.entry_price),
+                    exit_price=exit_price,
+                    quantity=quantity,
+                    side=side,
+                ) + partial_realized
             )
             trade.pnl_pct = side_mult * (
                 (exit_price - float(trade.entry_price)) / float(trade.entry_price)

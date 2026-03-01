@@ -257,6 +257,13 @@ class BaseExecutor(ABC):
         available_balance = self.get_balance() if balance is None else balance
 
         side = str(getattr(signal, "side", "BUY")).upper()
+        if settings.trading.spot_only_mode and side == "SELL":
+            logger.bind(
+                event="SPOT_ONLY_BLOCK",
+                pair=signal.pair,
+                side=side,
+            ).warning("SPOT_ONLY_BLOCK")
+            return None
         bounded_multiplier = max(0.1, min(2.0, float(risk_multiplier)))
         risk_pct = signal.confidence * float(getattr(signal, "risk_per_trade", settings.trading.risk_per_trade)) * bounded_multiplier
 
@@ -267,6 +274,15 @@ class BaseExecutor(ABC):
             return None
 
         mark_price = float(ticker.get("price") or 0.0)
+        ticker_source = str(ticker.get("source", "unknown"))
+        if settings.trading.paper_require_live_price and self.mode == "PAPER" and ticker_source == "synthetic":
+            logger.bind(
+                event="LIVE_PRICE_REQUIRED",
+                pair=signal.pair,
+                source=ticker_source,
+            ).error("LIVE_PRICE_REQUIRED")
+            return None
+        logger.info(f"LIVE PRICE {signal.pair}: {mark_price:.8f} source={ticker_source}")
         market_entry_price = mark_price
 
         model_entry_price = float(getattr(signal, "model_entry_price", signal.entry_price) or signal.entry_price or 0.0)

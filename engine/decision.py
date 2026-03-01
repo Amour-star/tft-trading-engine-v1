@@ -104,7 +104,7 @@ class DecisionEngine:
         self.min_confidence = float(
             os.getenv("MIN_CONFIDENCE", str(self.confidence_threshold))
         )
-        self.allow_shorts = bool(settings.trading.allow_shorts)
+        self.allow_shorts = bool(settings.trading.allow_shorts and not settings.trading.spot_only_mode)
         self.aggression_level = float(settings.trading.aggression_level)
         self.regime_engine = RegimeEngine()
         self.adaptive_threshold = AdaptiveConfidenceThreshold(
@@ -118,6 +118,8 @@ class DecisionEngine:
         self.xgb_weight = 0.40
         self.ppo_weight = 0.20
         self._normalize_agent_weights()
+        if settings.trading.spot_only_mode:
+            logger.info("Spot-only mode enabled: short signals are disabled")
 
         # Dynamic thresholds (adjusted by self-improving loop)
         self._atr_min_multiplier: float = 1.0

@@ -131,6 +131,8 @@ class TradingConfig:
     paper_fee_rate: float = _env_float("PAPER_FEE_RATE", 0.001)
     paper_slippage_bps: float = _env_float("PAPER_SLIPPAGE_BPS", 0.0)
     paper_db_path: str = _env("PAPER_DB_PATH", str(BASE_DIR / "data" / "paper_trading.db"))
+    paper_require_live_price: bool = _env_bool("PAPER_REQUIRE_LIVE_PRICE", True)
+    spot_only_mode: bool = _env_bool("SPOT_ONLY_MODE", True)
     max_open_trades: int = _env_int("MAX_OPEN_TRADES", 3)
     max_spread_pct: float = _env_float("MAX_SPREAD_PCT", 0.005)
     top_pairs_count: int = 1

@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import requests
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -202,7 +203,7 @@ class KuCoinDataFetcher:
         asks = [(price * (1.0 + i * 0.0005), 10.0 + i) for i in range(depth)]
         return {"bids": bids, "asks": asks, "time": int(time.time() * 1000)}
 
-    def _synthetic_ticker(self, symbol: str) -> Dict[str, float]:
+    def _synthetic_ticker(self, symbol: str) -> Dict[str, Any]:
         self._assert_xrp_symbol(symbol)
         price = float(self._base_price(symbol))
         return {
@@ -211,7 +212,120 @@ class KuCoinDataFetcher:
             "best_ask": price * 1.0005,
             "size": 1.0,
             "time": float(int(time.time() * 1000)),
+            "source": "synthetic",
         }
+
+    def _public_get_json(
+        self,
+        url: str,
+        params: Optional[Dict[str, Any]] = None,
+        timeout_sec: float = 4.0,
+    ) -> Dict[str, Any]:
+        response = requests.get(url, params=params, timeout=timeout_sec)
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Unexpected non-dict response")
+        return payload
+
+    @staticmethod
+    def _to_binance_symbol(symbol: str) -> str:
+        return symbol.replace("-", "").replace("/", "").upper()
+
+    def _fetch_ticker_via_kucoin_rest(self, symbol: str) -> Dict[str, Any]:
+        payload = self._public_get_json(
+            f"{settings.kucoin.base_url}/api/v1/market/orderbook/level1",
+            params={"symbol": symbol},
+        )
+        data = payload.get("data", {}) if isinstance(payload, dict) else {}
+        price = _as_float(data.get("price"), 0.0)
+        best_bid = _as_float(data.get("bestBid"), price)
+        best_ask = _as_float(data.get("bestAsk"), price)
+        if price <= 0:
+            price = _as_float(best_ask or best_bid, 0.0)
+        if price <= 0:
+            raise ValueError("KuCoin REST ticker returned invalid price")
+        if best_bid <= 0:
+            best_bid = price
+        if best_ask <= 0:
+            best_ask = price
+        return {
+            "price": price,
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+            "size": _as_float(data.get("size"), 0.0),
+            "time": _as_float(data.get("time"), float(int(time.time() * 1000))),
+            "source": "kucoin_rest",
+        }
+
+    def _fetch_ticker_via_binance_rest(self, symbol: str) -> Dict[str, Any]:
+        binance_symbol = self._to_binance_symbol(symbol)
+        book_payload = self._public_get_json(
+            "https://api.binance.com/api/v3/ticker/bookTicker",
+            params={"symbol": binance_symbol},
+        )
+        price_payload = self._public_get_json(
+            "https://api.binance.com/api/v3/ticker/price",
+            params={"symbol": binance_symbol},
+        )
+        price = _as_float(price_payload.get("price"), 0.0)
+        best_bid = _as_float(book_payload.get("bidPrice"), price)
+        best_ask = _as_float(book_payload.get("askPrice"), price)
+        if price <= 0:
+            price = _as_float(best_ask or best_bid, 0.0)
+        if price <= 0:
+            raise ValueError("Binance REST ticker returned invalid price")
+        if best_bid <= 0:
+            best_bid = price
+        if best_ask <= 0:
+            best_ask = price
+        return {
+            "price": price,
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+            "size": 0.0,
+            "time": float(int(time.time() * 1000)),
+            "source": "binance_rest",
+        }
+
+    def _fetch_klines_via_kucoin_rest(
+        self,
+        symbol: str,
+        timeframe: str,
+        start_dt: Optional[datetime],
+        end_dt: Optional[datetime],
+    ) -> pd.DataFrame:
+        params: Dict[str, Any] = {
+            "symbol": symbol,
+            "type": TIMEFRAME_MAP.get(timeframe, timeframe),
+        }
+        if start_dt:
+            params["startAt"] = int(start_dt.timestamp())
+        if end_dt:
+            params["endAt"] = int(end_dt.timestamp())
+
+        payload = self._public_get_json(
+            f"{settings.kucoin.base_url}/api/v1/market/candles",
+            params=params,
+            timeout_sec=6.0,
+        )
+        raw = payload.get("data", []) if isinstance(payload, dict) else []
+        if not raw:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(
+            raw,
+            columns=["timestamp", "open", "close", "high", "low", "volume", "turnover"],
+        )
+        for col in ["open", "close", "high", "low", "volume", "turnover"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df["timestamp"] = pd.to_datetime(df["timestamp"].astype(int), unit="s")
+        df.dropna(subset=["timestamp", "open", "close", "high", "low", "volume"], inplace=True)
+        df.sort_values("timestamp", inplace=True)
+        df.reset_index(drop=True, inplace=True)
+        if not df.empty:
+            self._last_prices[symbol] = float(df["close"].iloc[-1])
+        return df
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
     def get_top_usdt_pairs(self, top_n: int = 30) -> List[Dict[str, Any]]:
@@ -259,7 +373,11 @@ class KuCoinDataFetcher:
         """Fetch OHLCV klines for a symbol."""
         assert symbol == XRP_ONLY_SYMBOL
         if self._offline_mode or self.market is None:
-            return self._generate_synthetic_klines(symbol, timeframe, start_dt, end_dt)
+            try:
+                return self._fetch_klines_via_kucoin_rest(symbol, timeframe, start_dt, end_dt)
+            except Exception as exc:
+                logger.warning(f"REST klines failed for {symbol} {timeframe}, using synthetic data: {exc}")
+                return self._generate_synthetic_klines(symbol, timeframe, start_dt, end_dt)
 
         kline_type = TIMEFRAME_MAP.get(timeframe, timeframe)
         params: Dict[str, Any] = {"symbol": symbol, "kline_type": kline_type}
@@ -341,11 +459,23 @@ class KuCoinDataFetcher:
             return self._synthetic_orderbook(symbol, depth)
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=5))
-    def get_ticker(self, symbol: str) -> Dict[str, float]:
+    def get_ticker(self, symbol: str) -> Dict[str, Any]:
         """Get current ticker data."""
         self._assert_xrp_symbol(symbol)
         if self._offline_mode or self.market is None:
-            return self._synthetic_ticker(symbol)
+            try:
+                ticker = self._fetch_ticker_via_kucoin_rest(symbol)
+                self._last_prices[symbol] = float(ticker["price"])
+                return ticker
+            except Exception as kucoin_exc:
+                logger.warning(f"KuCoin REST ticker failed for {symbol}: {kucoin_exc}")
+                try:
+                    ticker = self._fetch_ticker_via_binance_rest(symbol)
+                    self._last_prices[symbol] = float(ticker["price"])
+                    return ticker
+                except Exception as binance_exc:
+                    logger.warning(f"Binance REST ticker failed for {symbol}, using synthetic ticker: {binance_exc}")
+                    return self._synthetic_ticker(symbol)
 
         try:
             t = self.market.get_ticker(symbol)
@@ -397,10 +527,23 @@ class KuCoinDataFetcher:
                 "best_ask": best_ask,
                 "size": _as_float(t.get("size", 0.0), 0.0),
                 "time": _as_float(t.get("time", int(time.time() * 1000)), int(time.time() * 1000)),
+                "source": "kucoin_sdk",
             }
         except Exception as exc:
-            logger.warning(f"Ticker fetch failed, using synthetic ticker: {exc}")
-            return self._synthetic_ticker(symbol)
+            logger.warning(f"SDK ticker failed for {symbol}: {exc}")
+            try:
+                ticker = self._fetch_ticker_via_kucoin_rest(symbol)
+                self._last_prices[symbol] = float(ticker["price"])
+                return ticker
+            except Exception as kucoin_exc:
+                logger.warning(f"KuCoin REST ticker failed for {symbol}: {kucoin_exc}")
+                try:
+                    ticker = self._fetch_ticker_via_binance_rest(symbol)
+                    self._last_prices[symbol] = float(ticker["price"])
+                    return ticker
+                except Exception as binance_exc:
+                    logger.warning(f"Binance REST ticker failed for {symbol}, using synthetic ticker: {binance_exc}")
+                    return self._synthetic_ticker(symbol)
 
     def get_spread(self, symbol: str) -> Tuple[float, float]:
         """Get bid-ask spread in absolute and percentage terms."""

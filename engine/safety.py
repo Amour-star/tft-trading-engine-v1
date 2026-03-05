@@ -54,7 +54,27 @@ class SafetyManager:
 
         session = get_session()
         try:
-            open_trades = session.query(Trade).filter(Trade.status == "open").count()
+            open_trades = (
+                session.query(Trade)
+                .filter(Trade.status == "open", Trade.quantity.isnot(None), Trade.quantity > 0)
+                .count()
+            )
+            if settings.trading.trading_mode.upper() == "PAPER":
+                try:
+                    from execution.paper_executor import load_paper_snapshot
+
+                    snapshot = load_paper_snapshot()
+                    positions = snapshot.get("positions", {}) or {}
+                    open_positions = sum(
+                        1
+                        for payload in positions.values()
+                        if abs(float((payload or {}).get("quantity", 0.0) or 0.0)) > 1e-12
+                    )
+                    # In paper mode, executor positions are the source of truth.
+                    open_trades = int(open_positions)
+                except Exception as exc:
+                    logger.debug("Paper open-position snapshot unavailable: {}", exc)
+
             if open_trades >= settings.trading.max_open_trades:
                 return False, f"Max open trades reached ({open_trades})"
         finally:
@@ -124,8 +144,13 @@ class SafetyManager:
             "max_consecutive_losses": self.cfg.max_consecutive_losses,
         }
 
-    def load_state(self) -> None:
+    def load_state(self, force_refresh: bool = False) -> None:
         self._refresh_state_from_db()
+        if force_refresh:
+            self._last_check_date = None
+            self._daily_pnl = 0.0
+            self._daily_trade_count = 0
+            self._consecutive_losses = 0
         self._refresh_daily_stats()
 
     def _save_state(self, key: str, value: bool) -> None:
@@ -178,8 +203,7 @@ class SafetyManager:
                 try:
                     state = session.query(EngineState).filter(EngineState.key == key).first()
                     value = bool(state.value.get("value", False)) if state else False
-                    current = bool(getattr(self, f"_{key}", False))
-                    setattr(self, f"_{key}", bool(current or value))
+                    setattr(self, f"_{key}", value)
                 except Exception as exc:
                     logger.error("Error loading engine state '{}' : {}", key, exc)
         finally:

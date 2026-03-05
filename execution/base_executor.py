@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -12,9 +13,10 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from loguru import logger
 
-from config.settings import XRP_ONLY_SYMBOL, settings
+from config.settings import ACTIVE_SYMBOL, settings
 from data.database import PositionEvent
 from data.database import Trade, get_session
+from execution.event_bus import publish_event
 from risk.safety_layer import (
     abnormal_trade_detector,
     is_safe_mode,
@@ -90,6 +92,32 @@ class BaseExecutor(ABC):
     @abstractmethod
     def get_balance(self) -> float:
         raise NotImplementedError
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """
+        Compatibility metrics payload for callers that expect executor metrics.
+
+        Subclasses can expose richer snapshots via ``get_metrics_snapshot``.
+        """
+        snapshot_getter = getattr(self, "get_metrics_snapshot", None)
+        if callable(snapshot_getter):
+            try:
+                snapshot = snapshot_getter()
+                if isinstance(snapshot, dict):
+                    return snapshot
+            except Exception as exc:
+                logger.debug("get_metrics_snapshot failed: {}", exc)
+
+        balance = float(self.get_balance() or 0.0)
+        return {
+            "mode": self.mode,
+            "balance": balance,
+            "equity": balance,
+            "realized_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "positions": self.get_positions(),
+            "trade_count": 0,
+        }
 
     def place_stop_order(
         self,
@@ -198,44 +226,42 @@ class BaseExecutor(ABC):
         entry_price: Optional[float] = None,
     ) -> float:
         """
-        Calculate position size with the same risk model for both modes.
-        risk_amount = balance * risk_pct
-        position_size = risk_amount / abs(entry - stop)
+        Aggressive position sizing: use full available balance.
+        position_size = available_balance * leverage_factor / entry_price
+        leverage_factor defaults to 1.0 (100% of available balance).
         """
-        if signal.pair != XRP_ONLY_SYMBOL:
-            raise RuntimeError(f"XRP-only mode: unsupported signal pair {signal.pair}")
-        risk_amount = balance * risk_pct
+        if signal.pair != ACTIVE_SYMBOL:
+            raise RuntimeError(f"Symbol mismatch: expected {ACTIVE_SYMBOL}, got {signal.pair}")
+
         effective_entry = float(entry_price if entry_price is not None else signal.entry_price)
-        stop_distance = abs(effective_entry - signal.stop_price)
-        if stop_distance <= 0:
-            logger.error("Stop distance is zero, cannot size position")
+        if effective_entry <= 0:
+            logger.error("Entry price is zero, cannot size position")
             return 0.0
 
-        raw_qty = risk_amount / stop_distance
+        leverage_factor = 1.0
+        position_value = balance * leverage_factor
+        raw_qty = position_value / effective_entry
 
-        # Keep sizing consistent with deterministic validator caps.
-        max_position_value = float(balance) * 0.2
-        max_qty_by_position = max_position_value / float(effective_entry) if effective_entry > 0 else 0.0
-        max_qty_by_risk = risk_amount / float(effective_entry) if effective_entry > 0 else 0.0
-
-        limits = load_limits()
-        cap_candidates = [raw_qty, max_qty_by_position, max_qty_by_risk]
-        if effective_entry > 0 and limits.max_position_pct > 0:
-            cap_candidates.append((float(balance) * float(limits.max_position_pct)) / float(effective_entry))
-        if effective_entry > 0 and limits.max_notional_per_trade > 0:
-            cap_candidates.append(float(limits.max_notional_per_trade) / float(effective_entry))
-
-        capped_qty = min(cap_candidates)
-        qty = self.round_quantity(capped_qty, signal.pair)
+        qty = self.round_quantity(raw_qty, signal.pair)
 
         info = self.get_symbol_info(signal.pair)
         if qty < info["base_min_size"]:
             logger.warning(f"Position size {qty} below minimum {info['base_min_size']}")
             return 0.0
 
+        # Keep a small configurable reserve for fees/slippage.
+        fee_buffer_pct = max(0.0, min(0.10, float(os.getenv("POSITION_COST_BUFFER_PCT", "0.0015"))))
         cost = qty * effective_entry
-        if cost > balance * 0.95:
-            qty = self.round_quantity((balance * 0.90) / effective_entry, signal.pair)
+        max_cost = balance * (1.0 - fee_buffer_pct)
+        if cost > max_cost:
+            qty = self.round_quantity(max_cost / effective_entry, signal.pair)
+
+        logger.info(
+            f"POSITION_SIZE | symbol={signal.pair} | balance={balance:.2f} | "
+            f"entry={effective_entry:.6f} | qty={qty} | "
+            f"notional={qty * effective_entry:.2f} | leverage_factor={leverage_factor} | "
+            f"fee_buffer_pct={fee_buffer_pct:.4f}"
+        )
 
         return qty
 
@@ -245,12 +271,21 @@ class BaseExecutor(ABC):
         balance: Optional[float] = None,
         risk_multiplier: float = 1.0,
     ) -> Optional[str]:
-        if signal.pair != XRP_ONLY_SYMBOL:
-            raise RuntimeError(f"XRP-only mode: unsupported signal pair {signal.pair}")
+        publish_event(
+            "SIGNAL_RECEIVED",
+            {
+                "symbol": signal.pair,
+                "side": str(getattr(signal, "side", "BUY")).upper(),
+                "mode": self.mode,
+            },
+        )
+        if signal.pair != ACTIVE_SYMBOL:
+            raise RuntimeError(f"Symbol mismatch: expected {ACTIVE_SYMBOL}, got {signal.pair}")
         if is_safe_mode():
             logger.bind(event="TRADE_BLOCKED", pair=signal.pair, reason="safe_mode").warning(
                 "TRADE_BLOCKED"
             )
+            publish_event("RISK_REJECTED", {"symbol": signal.pair, "reason": "safe_mode"})
             return None
 
         trade_id = f"{self.mode.lower()}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -263,14 +298,20 @@ class BaseExecutor(ABC):
                 pair=signal.pair,
                 side=side,
             ).warning("SPOT_ONLY_BLOCK")
+            publish_event("RISK_REJECTED", {"symbol": signal.pair, "reason": "spot_only_mode"})
             return None
         bounded_multiplier = max(0.1, min(2.0, float(risk_multiplier)))
-        risk_pct = signal.confidence * float(getattr(signal, "risk_per_trade", settings.trading.risk_per_trade)) * bounded_multiplier
+        # Keep strategy risk metadata even when full-balance sizing is enabled.
+        risk_pct = max(
+            0.0,
+            min(1.0, float(getattr(signal, "risk_per_trade", settings.trading.risk_per_trade or 0.0))),
+        )
 
         try:
             ticker = self.fetcher.get_ticker(signal.pair)
         except Exception as exc:
             logger.error(f"[VALIDATION] Unable to fetch ticker for {signal.pair}: {exc}")
+            publish_event("RISK_REJECTED", {"symbol": signal.pair, "reason": "ticker_unavailable"})
             return None
 
         mark_price = float(ticker.get("price") or 0.0)
@@ -281,6 +322,7 @@ class BaseExecutor(ABC):
                 pair=signal.pair,
                 source=ticker_source,
             ).error("LIVE_PRICE_REQUIRED")
+            publish_event("RISK_REJECTED", {"symbol": signal.pair, "reason": "paper_live_price_required"})
             return None
         logger.info(f"LIVE PRICE {signal.pair}: {mark_price:.8f} source={ticker_source}")
         market_entry_price = mark_price
@@ -290,6 +332,7 @@ class BaseExecutor(ABC):
             logger.warning(
                 f"[VALIDATION] Trade blocked for {signal.pair}: invalid market price mark={mark_price:.8f} entry={market_entry_price:.8f}"
             )
+            publish_event("RISK_REJECTED", {"symbol": signal.pair, "reason": "invalid_market_price"})
             return None
 
         model_vs_mark_pct = abs(model_entry_price - mark_price) / mark_price
@@ -315,6 +358,7 @@ class BaseExecutor(ABC):
                 difference_pct=model_vs_mark_pct,
                 threshold=0.05,
             ).error("PRICE_DESYNC_ERROR")
+            publish_event("RISK_REJECTED", {"symbol": signal.pair, "reason": "model_price_desync"})
             return None
 
         if entry_vs_mark_pct >= 0.02:
@@ -327,6 +371,7 @@ class BaseExecutor(ABC):
                 difference_pct=entry_vs_mark_pct,
                 threshold=0.02,
             ).error("PRICE_INVARIANT_REJECTED")
+            publish_event("RISK_REJECTED", {"symbol": signal.pair, "reason": "market_price_invariant"})
             return None
         assert abs(market_entry_price - mark_price) / mark_price < 0.02
 
@@ -340,6 +385,7 @@ class BaseExecutor(ABC):
         quantity = self.round_quantity(base_quantity * size_multiplier, signal.pair)
         if quantity <= 0:
             logger.warning(f"Cannot size position for {signal.pair}")
+            publish_event("RISK_REJECTED", {"symbol": signal.pair, "reason": "invalid_quantity"})
             return None
 
         notional = float(market_entry_price) * float(quantity)
@@ -353,9 +399,11 @@ class BaseExecutor(ABC):
                 notional=notional,
                 reason="abnormal_trade_detector",
             ).warning("TRADE_BLOCKED")
+            publish_event("RISK_REJECTED", {"symbol": signal.pair, "reason": "abnormal_trade_detector"})
             return None
 
         if not validate_position_size(signal.pair, notional, float(available_balance)):
+            publish_event("RISK_REJECTED", {"symbol": signal.pair, "reason": "position_size_limits"})
             return None
 
         trade_data = {
@@ -368,6 +416,8 @@ class BaseExecutor(ABC):
             "quantity": quantity,
             "mark_price": mark_price,
             "risk_per_trade": risk_pct,
+            "full_balance_mode": True,
+            "max_position_fraction": 1.0,
             "balance": available_balance,
         }
 
@@ -375,6 +425,7 @@ class BaseExecutor(ABC):
         if not validation.get("valid", False):
             reason = validation.get("reason", "Unknown validation failure")
             logger.warning(f"[VALIDATION] Trade blocked for {signal.pair}: {reason}")
+            publish_event("RISK_REJECTED", {"symbol": signal.pair, "reason": str(reason)})
             return None
 
         if AUDITOR_READY and settings.runtime.ai_auditor_enabled:
@@ -386,11 +437,23 @@ class BaseExecutor(ABC):
             logger.warning(
                 f"[AI_AUDIT] Trade blocked for {signal.pair}: {audit_result.get('reason', 'No reason')}"
             )
+            publish_event("RISK_REJECTED", {"symbol": signal.pair, "reason": "ai_audit"})
             return None
 
         logger.info(
             f"[{self.mode}] Executing {signal.pair}: qty={quantity}, "
             f"entry~{market_entry_price:.6f}, risk_multiplier={bounded_multiplier:.2f}"
+        )
+        publish_event(
+            "EXECUTION_VALIDATED",
+            {
+                "trade_id": trade_id,
+                "symbol": signal.pair,
+                "side": side,
+                "quantity": float(quantity),
+                "entry_price": float(market_entry_price),
+                "mode": self.mode,
+            },
         )
 
         try:
@@ -450,14 +513,43 @@ class BaseExecutor(ABC):
             )
 
             logger.info(
-                f"[{self.mode}] Trade opened: {trade_id} | {signal.pair} | "
-                f"Entry: {fill_price:.6f} | Stop: {signal.stop_price:.6f} | "
-                f"Target: {signal.target_price:.6f}"
+                f"TRADE EXECUTED | symbol={signal.pair} | size={executed_qty} | "
+                f"confidence={signal.confidence:.3f} | regime={signal.market_regime} | "
+                f"entry={fill_price:.6f} | stop={signal.stop_price:.6f} | "
+                f"target={signal.target_price:.6f} | mode={self.mode} | trade_id={trade_id}"
+            )
+            publish_event(
+                "TRADE_OPENED",
+                {
+                    "trade_id": trade_id,
+                    "symbol": signal.pair,
+                    "side": side,
+                    "quantity": float(executed_qty),
+                    "fill_price": float(fill_price),
+                    "mode": self.mode,
+                },
+            )
+            publish_event(
+                "EXECUTION_COMPLETE",
+                {
+                    "trade_id": trade_id,
+                    "symbol": signal.pair,
+                    "slippage_bps": float(slippage_bps),
+                    "latency_ms": float(latency_ms),
+                },
             )
             return trade_id
         except Exception as exc:
             logger.error(f"Execution failed for {signal.pair}: {exc}")
             self.on_execution_failed(signal.pair, quantity)
+            publish_event(
+                "EXECUTION_FAILED",
+                {
+                    "trade_id": trade_id,
+                    "symbol": signal.pair,
+                    "reason": str(exc),
+                },
+            )
             return None
 
     def _record_open_trade(

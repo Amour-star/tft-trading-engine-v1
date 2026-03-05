@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -61,6 +62,18 @@ def _log_environment_diagnostics() -> None:
 
 
 def _run_engine() -> None:
+    quant_enabled = os.getenv("QUANT_ENGINE_ENABLED", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if quant_enabled:
+        from scripts.run_quant_engine import main as run_quant_main
+
+        run_quant_main()
+        return
+
     from core.shutdown_controller import shutdown_controller
     from engine.main import main
 

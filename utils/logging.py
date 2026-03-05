@@ -6,21 +6,32 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict
+from zoneinfo import ZoneInfo
 
 from loguru import logger
 
 from config.settings import settings
 
 
+def _berlin_now() -> datetime:
+    tz_name = (os.getenv("TZ", "Europe/Berlin") or "Europe/Berlin").strip()
+    try:
+        return datetime.now(tz=ZoneInfo(tz_name))
+    except Exception:
+        return datetime.now()
+
+
 def _json_sink(message: Any) -> None:
     """Write structured JSON to log files."""
     record = message.record
     log_entry = {
-        "timestamp": record["time"].isoformat(),
+        "timestamp": _berlin_now().isoformat(),
         "level": record["level"].name,
         "module": record["module"],
         "function": record["function"],
@@ -33,6 +44,25 @@ def _json_sink(message: Any) -> None:
             if k not in ("_serialized",):
                 log_entry[k] = v
     print(json.dumps(log_entry), file=sys.stderr, flush=True)
+
+
+def _escape_loguru_braces(value: Any) -> str:
+    text = str(value)
+    # Loguru applies format_map on formatter output. Escape braces in dynamic text.
+    return text.replace("{", "{{").replace("}", "}}")
+
+
+def format_text_record(record: Dict[str, Any]) -> str:
+    ts = _berlin_now().strftime("%Y-%m-%d %H:%M:%S")
+    level = getattr(record.get("level"), "name", "INFO")
+    module = record.get("module", "unknown")
+    function = record.get("function", "unknown")
+    line = record.get("line", 0)
+    message = _escape_loguru_braces(record.get("message", ""))
+    return (
+        f"{ts} | {_escape_loguru_braces(level)} | "
+        f"{_escape_loguru_braces(module)}:{_escape_loguru_braces(function)}:{line} | {message}\n"
+    )
 
 
 def setup_logging() -> None:
@@ -74,10 +104,11 @@ def setup_logging() -> None:
         encoding="utf-8",
     )
     rotating_handler.setLevel(logging.INFO)
+
     logger.add(
         rotating_handler,
         level="INFO",
-        format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {module}:{function}:{line} | {message}",
+        format=format_text_record,
         enqueue=True,
     )
 

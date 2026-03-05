@@ -14,7 +14,7 @@ class MockFetcher:
     def __init__(self) -> None:
         self.prices = {
             "XRP-USDT": 100.0,
-            "XRP-USDT": 200.0,
+            "ETH-USDT": 200.0,
         }
 
     def get_ticker(self, symbol: str):
@@ -92,9 +92,9 @@ def test_paper_fee_calculation(tmp_path: Path):
         db_path=str(tmp_path / "paper_fee.db"),
     )
 
-    buy = executor.buy("XRP-USDT", qty=1.0, price=200.0)
-    assert buy["fee"] == pytest.approx(0.4)
-    assert executor.get_balance() == pytest.approx(299.6)
+    buy = executor.buy("XRP-USDT", qty=1.0, price=100.0)
+    assert buy["fee"] == pytest.approx(0.2)
+    assert executor.get_balance() == pytest.approx(399.8)
 
 
 def test_paper_pnl_close_position(tmp_path: Path):
@@ -177,6 +177,25 @@ def test_paper_short_open_and_cover(tmp_path: Path):
     assert cover["realized_pnl"] is not None
     assert cover["realized_pnl"] > 0.0
     assert executor.get_positions() == {}
+
+
+def test_paper_metrics_equity_after_short_is_mark_to_market(tmp_path: Path):
+    fetcher = MockFetcher()
+    executor = PaperExecutor(
+        fetcher,
+        starting_balance=1000.0,
+        fee_rate=0.001,
+        slippage_bps=0.0,
+        db_path=str(tmp_path / "paper_metrics_short.db"),
+    )
+
+    short_entry = executor.sell("XRP-USDT", qty=5.0, price=100.0)
+    assert short_entry["status"] == "filled"
+
+    metrics = executor.get_metrics()
+    assert metrics["balance"] == pytest.approx(1499.5)
+    assert metrics["net_position_value"] == pytest.approx(-500.0)
+    assert metrics["equity"] == pytest.approx(999.5)
 
 
 def test_paper_price_guard_rejects_extreme_price(tmp_path: Path):

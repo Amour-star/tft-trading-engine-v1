@@ -30,6 +30,18 @@ def _std(values: list[float]) -> float:
     return math.sqrt(max(variance, 0.0))
 
 
+def _realized_returns_from_pnl(pnls: list[float]) -> list[float]:
+    returns: list[float] = []
+    equity = max(_safe_float(settings.trading.paper_starting_balance, 1.0), 1e-9)
+    for pnl in pnls:
+        ret = pnl / equity if abs(equity) > 1e-9 else 0.0
+        returns.append(_safe_float(ret, 0.0))
+        equity += pnl
+        if not math.isfinite(equity) or abs(equity) <= 1e-9:
+            equity = max(_safe_float(settings.trading.paper_starting_balance, 1.0), 1e-9)
+    return returns
+
+
 def _max_drawdown_from_pnl(pnls: list[float]) -> float:
     if not pnls:
         return 0.0
@@ -66,17 +78,26 @@ def update_risk_metrics_snapshot(equity_override: Optional[float] = None) -> Opt
             return None
 
         pnls = [_safe_float(t.pnl) for t in closed_trades]
-        returns = [_safe_float(t.pnl_pct) for t in closed_trades]
+        returns = _realized_returns_from_pnl(pnls)
         rolling_returns = returns[-_ROLLING_WINDOW:]
         rolling_pnls = pnls[-_ROLLING_WINDOW:]
 
         mean_return = sum(rolling_returns) / len(rolling_returns)
+        min_trades_for_ratios = max(2, int(getattr(settings.trading, "metrics_min_trades", 20)))
         std_return = _std(rolling_returns)
-        sharpe = (mean_return / std_return) if std_return > 1e-12 else 0.0
+        sharpe = (
+            (mean_return / std_return)
+            if len(rolling_returns) >= min_trades_for_ratios and std_return > 1e-12
+            else 0.0
+        )
 
         negative_returns = [r for r in rolling_returns if r < 0]
         std_negative = _std(negative_returns)
-        sortino = (mean_return / std_negative) if std_negative > 1e-12 else 0.0
+        sortino = (
+            (mean_return / std_negative)
+            if len(rolling_returns) >= min_trades_for_ratios and std_negative > 1e-12
+            else 0.0
+        )
 
         wins = sum(1 for pnl in rolling_pnls if pnl > 0)
         win_rate = wins / len(rolling_pnls) if rolling_pnls else 0.0
@@ -117,4 +138,3 @@ def update_risk_metrics_snapshot(equity_override: Optional[float] = None) -> Opt
         return None
     finally:
         session.close()
-

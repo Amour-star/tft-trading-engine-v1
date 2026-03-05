@@ -25,7 +25,8 @@ RUN python -m pip install --upgrade pip setuptools wheel && \
 FROM python:3.11-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    TZ=Europe/Berlin
 
 WORKDIR /app
 
@@ -33,6 +34,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       bash \
       curl \
       libgomp1 \
+      tzdata \
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+    && echo $TZ > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
 ENV VIRTUAL_ENV=/opt/venv

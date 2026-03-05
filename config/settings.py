@@ -5,6 +5,7 @@ All settings can be overridden via environment variables.
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List
@@ -13,13 +14,34 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Default process timezone for display/logging. UTC persistence still uses datetime.utcnow().
+_runtime_tz = (os.getenv("TZ", "Europe/Berlin") or "Europe/Berlin").strip()
+os.environ["TZ"] = _runtime_tz
+if hasattr(time, "tzset"):
+    try:
+        time.tzset()
+    except Exception:
+        pass
+
 BASE_DIR = Path(__file__).resolve().parent.parent
-XRP_ONLY_SYMBOL = "XRP-USDT"
-TRADING_UNIVERSE: List[str] = [XRP_ONLY_SYMBOL]
+
+# Symbol is now dynamically set per engine instance via SYMBOL env var.
+ACTIVE_SYMBOL: str = os.getenv("SYMBOL", "XRP-USDT").strip()
+# Kept for backward compatibility but no longer used for enforcement.
+XRP_ONLY_SYMBOL = ACTIVE_SYMBOL
+TRADING_UNIVERSE: List[str] = [ACTIVE_SYMBOL]
 
 
 def _env(key: str, default: str = "") -> str:
     return os.getenv(key, default)
+
+
+def _env_first(*keys: str, default: str = "") -> str:
+    for key in keys:
+        value = os.getenv(key)
+        if value is not None and str(value).strip() != "":
+            return value
+    return default
 
 
 def _env_bool(key: str, default: bool = False) -> bool:
@@ -62,10 +84,19 @@ def _resolve_trading_mode() -> str:
 
 @dataclass(frozen=True)
 class KuCoinConfig:
-    api_key: str = _env("KUCOIN_API_KEY")
-    api_secret: str = _env("KUCOIN_API_SECRET")
-    api_passphrase: str = _env("KUCOIN_API_PASSPHRASE")
+    # Support aliases used by kucoin-python and kucoin-universal-sdk deploys.
+    api_key: str = _env_first("KUCOIN_API_KEY", "KUCOIN_KEY", default="")
+    api_secret: str = _env_first("KUCOIN_API_SECRET", "KUCOIN_SECRET", default="")
+    api_passphrase: str = _env_first(
+        "KUCOIN_API_PASSPHRASE",
+        "KUCOIN_PASSPHRASE",
+        default="",
+    )
     sandbox: bool = _env_bool("KUCOIN_SANDBOX", False)
+    require_auth: bool = _env_bool("KUCOIN_REQUIRE_AUTH", False)
+    auth_check_on_startup: bool = _env_bool("KUCOIN_AUTH_CHECK_ON_STARTUP", True)
+    allow_synthetic_orderbook: bool = _env_bool("ALLOW_SYNTHETIC_ORDERBOOK", False)
+    orderbook_retry_attempts: int = _env_int("ORDERBOOK_RETRY_ATTEMPTS", 3)
 
     @property
     def base_url(self) -> str:
@@ -135,6 +166,8 @@ class TradingConfig:
     spot_only_mode: bool = _env_bool("SPOT_ONLY_MODE", True)
     max_open_trades: int = _env_int("MAX_OPEN_TRADES", 3)
     max_spread_pct: float = _env_float("MAX_SPREAD_PCT", 0.005)
+    metrics_min_trades: int = _env_int("METRICS_MIN_TRADES", 20)
+    metrics_min_window_trades: int = _env_int("METRICS_MIN_WINDOW_TRADES", 5)
     top_pairs_count: int = 1
     quote_currency: str = "USDT"
     min_volume_24h: float = 500_000.0

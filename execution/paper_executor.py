@@ -3,6 +3,8 @@ Paper trading executor with persistent SQLite state.
 """
 from __future__ import annotations
 
+import os
+import random
 import sqlite3
 import threading
 from datetime import UTC, datetime
@@ -11,7 +13,7 @@ from typing import Any, Dict, List, Optional, cast
 
 from loguru import logger
 
-from config.settings import BASE_DIR, XRP_ONLY_SYMBOL, settings
+from config.settings import BASE_DIR, ACTIVE_SYMBOL, settings
 from execution.base_executor import BaseExecutor
 from risk.safety_layer import validate_position_size, validate_price
 
@@ -132,11 +134,16 @@ class PaperExecutor(BaseExecutor):
         self.db_path = _resolve_paper_db_path(db_path)
         self.fee_rate = settings.trading.paper_fee_rate if fee_rate is None else fee_rate
         self.slippage_bps = settings.trading.paper_slippage_bps if slippage_bps is None else slippage_bps
+        self.partial_fill_min = max(
+            0.1,
+            min(1.0, _safe_float(os.getenv("PAPER_PARTIAL_FILL_MIN", "1.0"), 1.0)),
+        )
         self._default_balance = (
             settings.trading.paper_starting_balance
             if starting_balance is None
             else float(starting_balance)
         )
+        self._starting_balance: float = float(self._default_balance)
 
         self._balance: float = self._default_balance
         self._realized_pnl: float = 0.0
@@ -233,6 +240,7 @@ class PaperExecutor(BaseExecutor):
             starting_balance = (
                 _safe_float(starting_balance_row["value"]) if starting_balance_row else self._default_balance
             )
+            self._starting_balance = float(starting_balance)
 
             pos_rows = conn.execute(
                 "SELECT symbol, quantity, avg_entry_price, entry_fee_total, updated_at FROM positions"
@@ -405,8 +413,8 @@ class PaperExecutor(BaseExecutor):
         requested_price: Optional[float],
         ticker: Optional[Dict[str, Any]] = None,
     ) -> float:
-        if symbol != XRP_ONLY_SYMBOL:
-            raise RuntimeError(f"XRP-only mode: unsupported symbol {symbol}")
+        if symbol != ACTIVE_SYMBOL:
+            raise RuntimeError(f"Symbol mismatch: expected {ACTIVE_SYMBOL}, got {symbol}")
         if requested_price is not None and requested_price > 0:
             return float(requested_price)
         else:
@@ -444,8 +452,13 @@ class PaperExecutor(BaseExecutor):
     def get_realized_pnl(self) -> float:
         return float(self._realized_pnl)
 
-    def get_unrealized_pnl(self) -> float:
+    def _mark_to_market_snapshot(self) -> tuple[float, float]:
+        """
+        Return (unrealized_pnl, net_position_value) for current open positions.
+        net_position_value is sum(mark_price * signed_qty).
+        """
         unrealized = 0.0
+        net_position_value = 0.0
         account_balance = max(1.0, self._balance)
         for symbol, position in list(self._positions.items()):
             qty = float(position["quantity"])
@@ -453,20 +466,21 @@ class PaperExecutor(BaseExecutor):
             entry_fee_total = float(position.get("entry_fee_total", 0.0))
             if entry_price <= 0 or abs(qty) <= 1e-12:
                 continue
+            mark_price = entry_price
             try:
                 market = self.fetcher.get_ticker(symbol)
-                mark_price = _safe_float(market.get("price"), entry_price)
+                fetched_price = _safe_float(market.get("price"), 0.0)
                 ticker_source = str(market.get("source", "unknown"))
                 if settings.trading.paper_require_live_price and ticker_source == "synthetic":
                     logger.bind(event="LIVE_PRICE_REQUIRED", pair=symbol, source=ticker_source).warning(
-                        "Skipping unrealized update due to synthetic ticker"
+                        "Using entry price fallback for unrealized update due to synthetic ticker"
                     )
-                    continue
+                elif fetched_price > 0:
+                    mark_price = fetched_price
             except Exception:
                 logger.bind(event="PNL_GUARD", pair=symbol).warning(
-                    "Unable to fetch mark price, skipping unrealized update"
+                    "Unable to fetch mark price, using entry price fallback"
                 )
-                continue
             pnl = (mark_price - entry_price) * qty - entry_fee_total
             if abs(pnl) > account_balance * 5:
                 logger.bind(
@@ -479,20 +493,62 @@ class PaperExecutor(BaseExecutor):
                 self.close_position(symbol)
                 continue
             unrealized += pnl
+            net_position_value += mark_price * qty
+        return unrealized, net_position_value
+
+    def get_unrealized_pnl(self) -> float:
+        unrealized, _ = self._mark_to_market_snapshot()
         return unrealized
 
     def get_metrics_snapshot(self) -> Dict[str, Any]:
-        unrealized = self.get_unrealized_pnl()
+        unrealized, net_position_value = self._mark_to_market_snapshot()
+        cash_balance = self.get_balance()
+        equity_mark_basis = cash_balance + net_position_value
+        equity_pnl_basis = float(self._starting_balance) + float(self.get_realized_pnl()) + float(unrealized)
+        equity = float(equity_pnl_basis)
+        if abs(equity_mark_basis - equity_pnl_basis) > max(5.0, abs(self._starting_balance) * 0.02):
+            logger.bind(
+                event="PAPER_EQUITY_INVARIANT_MISMATCH",
+                db_path=str(self.db_path),
+                equity_mark_basis=float(equity_mark_basis),
+                equity_pnl_basis=float(equity_pnl_basis),
+                balance=float(cash_balance),
+                net_position_value=float(net_position_value),
+                realized_pnl=float(self.get_realized_pnl()),
+                unrealized_pnl=float(unrealized),
+            ).warning("PAPER_EQUITY_INVARIANT_MISMATCH")
         return {
             "mode": self.mode,
-            "balance": self.get_balance(),
+            "balance": cash_balance,
             "realized_pnl": self.get_realized_pnl(),
             "unrealized_pnl": unrealized,
-            "equity": self.get_balance() + unrealized,
+            "net_position_value": net_position_value,
+            "equity": equity,
+            "equity_mark_basis": float(equity_mark_basis),
+            "equity_pnl_basis": float(equity_pnl_basis),
+            "starting_balance": float(self._starting_balance),
             "positions": self.get_positions(),
             "trade_count": len(self.trade_history),
             "db_path": str(self.db_path),
         }
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """Backward-compatible alias used by the engine sizing path."""
+        return self.get_metrics_snapshot()
+
+    def _resolve_fill_quantity(self, symbol: str, requested_qty: float) -> float:
+        qty = max(0.0, float(requested_qty))
+        if qty <= 0:
+            return 0.0
+        if self.partial_fill_min >= 0.999:
+            return qty
+
+        ratio = random.uniform(self.partial_fill_min, 1.0)
+        filled = qty * ratio
+        rounded = self.round_quantity(filled, symbol)
+        if rounded <= 0:
+            rounded = qty
+        return min(qty, max(0.0, rounded))
 
     def buy(
         self,
@@ -502,9 +558,13 @@ class PaperExecutor(BaseExecutor):
         market_ticker: Optional[Dict[str, Any]] = None,
         ticker: Optional[Dict[str, Any]] = None,  # backward-compatible alias
     ) -> Dict[str, Any]:
-        if symbol != XRP_ONLY_SYMBOL:
-            raise RuntimeError(f"XRP-only mode: unsupported symbol {symbol}")
+        if symbol != ACTIVE_SYMBOL:
+            raise RuntimeError(f"Symbol mismatch: expected {ACTIVE_SYMBOL}, got {symbol}")
         with self._lock:
+            requested_qty = float(qty)
+            qty = self._resolve_fill_quantity(symbol, requested_qty)
+            if qty <= 0:
+                return cast(Dict[str, Any], False)
             try:
                 resolved_ticker = market_ticker or ticker or self.fetcher.get_ticker(symbol)
             except Exception as exc:
@@ -528,7 +588,7 @@ class PaperExecutor(BaseExecutor):
                 raise ValueError("Invalid entry price")
             if qty <= 0:
                 raise ValueError("Invalid quantity")
-            if fill_price > 0:
+            if price is None and fill_price > 0:
                 price_ratio = abs(mark_price - fill_price) / fill_price
                 if price_ratio > 0.5:
                     raise ValueError("Price scale mismatch detected")
@@ -639,6 +699,7 @@ class PaperExecutor(BaseExecutor):
                 "symbol": symbol,
                 "side": "buy",
                 "quantity": qty,
+                "requested_quantity": requested_qty,
                 "fill_price": fill_price,
                 "fee": fee,
                 "realized_pnl": realized_pnl,
@@ -646,10 +707,14 @@ class PaperExecutor(BaseExecutor):
             }
 
     def sell(self, symbol: str, qty: float, price: Optional[float] = None) -> Dict[str, Any]:
-        if symbol != XRP_ONLY_SYMBOL:
-            raise RuntimeError(f"XRP-only mode: unsupported symbol {symbol}")
+        if symbol != ACTIVE_SYMBOL:
+            raise RuntimeError(f"Symbol mismatch: expected {ACTIVE_SYMBOL}, got {symbol}")
         try:
             with self._lock:
+                requested_qty = float(qty)
+                qty = self._resolve_fill_quantity(symbol, requested_qty)
+                if qty <= 0:
+                    return cast(Dict[str, Any], False)
                 try:
                     market_ticker = self.fetcher.get_ticker(symbol)
                 except Exception as exc:
@@ -673,7 +738,7 @@ class PaperExecutor(BaseExecutor):
                 fill_price = self._market_price(symbol, "sell", price, ticker=market_ticker)
                 if not validate_price(symbol, fill_price, last_price or mark_price):
                     raise ValueError("Invalid exit price")
-                if fill_price > 0:
+                if price is None and fill_price > 0:
                     price_ratio = abs(mark_price - fill_price) / fill_price
                     if price_ratio > 0.5:
                         raise ValueError("Price scale mismatch detected")
@@ -769,6 +834,7 @@ class PaperExecutor(BaseExecutor):
                     "symbol": symbol,
                     "side": "sell",
                     "quantity": qty,
+                    "requested_quantity": requested_qty,
                     "fill_price": fill_price,
                     "fee": fee,
                     "realized_pnl": realized_pnl,
@@ -797,6 +863,42 @@ class PaperExecutor(BaseExecutor):
         if quantity > 0:
             return self.sell(symbol, quantity)
         return self.buy(symbol, abs(quantity))
+
+    def force_close(
+        self,
+        symbol: str,
+        quantity: float,
+        price: Optional[float] = None,
+        side: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Close paper positions safely using net exposure as source of truth.
+        Stale DB trades may request quantities larger than the current net position.
+        """
+        with self._lock:
+            position = self._positions.get(symbol)
+            net_qty = float((position or {}).get("quantity", 0.0))
+
+        if abs(net_qty) <= 1e-12:
+            return {"status": "no_position", "symbol": symbol, "quantity": 0.0}
+
+        requested = abs(_safe_float(quantity, abs(net_qty)))
+        close_qty = min(abs(net_qty), requested if requested > 0 else abs(net_qty))
+        if close_qty <= 1e-12:
+            return {"status": "no_position", "symbol": symbol, "quantity": 0.0}
+
+        if requested > abs(net_qty) + 1e-12:
+            logger.bind(
+                event="FORCE_CLOSE_CLAMPED",
+                symbol=symbol,
+                requested_qty=float(requested),
+                available_qty=float(abs(net_qty)),
+                requested_side=str(side or ""),
+            ).warning("FORCE_CLOSE_CLAMPED")
+
+        if net_qty > 0:
+            return self.sell(symbol, close_qty, price=price)
+        return self.buy(symbol, close_qty, price=price)
 
     def place_stop_order(
         self,
@@ -856,7 +958,7 @@ class PaperExecutor(BaseExecutor):
     def reconcile_positions(self) -> None:
         with self._lock:
             self._load_state()
-            symbols = list(self._positions.keys()) or [XRP_ONLY_SYMBOL]
+            symbols = list(self._positions.keys()) or [ACTIVE_SYMBOL]
             events = self.schedule_reconciliation(symbols, source="paper_executor")
             logger.bind(
                 reconciliation={
@@ -902,6 +1004,7 @@ class PaperExecutor(BaseExecutor):
                 conn.close()
 
             self._balance = target
+            self._starting_balance = target
             self._realized_pnl = 0.0
             self._positions.clear()
             self.trade_history.clear()

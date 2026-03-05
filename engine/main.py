@@ -54,12 +54,16 @@ class EngineRuntimeStats:
     def snapshot_unrealized(self, unrealized: float) -> None:
         self.unrealized_pnl = float(unrealized or 0.0)
 
-from config.settings import BASE_DIR, TRADING_UNIVERSE, XRP_ONLY_SYMBOL, settings
+from config.settings import ACTIVE_SYMBOL, BASE_DIR, TRADING_UNIVERSE, settings
 from core.instance_lock import InstanceLock
 from core.shutdown_controller import shutdown_controller
 from data.database import (
     DecisionEvent,
+    EquityHistory,
     EngineState,
+    MetricSnapshot,
+    Statistics,
+    Trade,
     dispose_engine,
     get_session,
     init_db,
@@ -72,10 +76,12 @@ from engine.decision import DecisionEngine
 from engine.feedback import FeedbackLoop
 from engine.governance import GovernanceService
 from engine.health import HealthServer
+from engine.metrics import PerformanceTracker
 from engine.performance_metrics import update_risk_metrics_snapshot
 from engine.safety import SafetyManager
 from engine.strategy_evolution import StrategyEvolutionEngine
 from execution.base_executor import BaseExecutor
+from execution.event_bus import publish_event
 from execution.executor import create_executor
 from execution.monitor import PositionMonitor
 from models.rl_position_manager import PPOPositionManager
@@ -114,15 +120,14 @@ class TradingEngine:
 
     def __init__(self) -> None:
         setup_logging()
-        if TRADING_UNIVERSE != [XRP_ONLY_SYMBOL]:
-            raise RuntimeError("Engine must run XRP-only mode")
-        logger.info("Initializing Trading Engine...")
-        logger.info("Universe locked to XRP-USDT")
+        logger.info(f"Engine initialized for SYMBOL={ACTIVE_SYMBOL}")
+        logger.info(f"Initializing Trading Engine for {ACTIVE_SYMBOL}...")
+        logger.info(f"Universe locked to {ACTIVE_SYMBOL}")
 
         # Initialize database.
         init_db()
 
-        # GPU auto-detection (runtime).
+        # GPU auto-detection and optimization (runtime).
         device = "cpu"
         gpu_name: Optional[str] = None
         try:
@@ -130,10 +135,14 @@ class TradingEngine:
 
             if torch.cuda.is_available():
                 device = "cuda"
+                torch.set_float32_matmul_precision("high")
                 try:
                     gpu_name = torch.cuda.get_device_name(0)
                 except Exception:
                     gpu_name = "Unknown GPU"
+                logger.info(f"[GPU] CUDA enabled | float32_matmul_precision=high | device={gpu_name}")
+            else:
+                logger.info("[GPU] CUDA not available, using CPU")
         except Exception:
             device = "cpu"
             gpu_name = None
@@ -145,6 +154,9 @@ class TradingEngine:
         if gpu_name:
             logger.bind(event="ENV_GPU", gpu_name=gpu_name).info("[ENV] GPU Name: {gpu}", gpu=gpu_name)
         self._save_engine_state("device", device)
+
+        self.mode = settings.trading.trading_mode.upper()
+        logger.info(f"[ENGINE] Running in {self.mode} mode")
 
         # Core components.
         self.fetcher = KuCoinDataFetcher()
@@ -178,20 +190,27 @@ class TradingEngine:
         self.shutdown_controller = shutdown_controller
         self.shutdown_controller.bind_signals()
 
-        self.mode = settings.trading.trading_mode.upper()
-        logger.info(f"[ENGINE] Running in {self.mode} mode")
-
         # Runtime state.
-        self._cycle_interval: int = max(60, self._env_int("ENGINE_CYCLE_INTERVAL_SECONDS", 300))
+        self._market_interval: int = max(2, self._env_int("ENGINE_MARKET_INTERVAL_SECONDS", 10))
+        self._signal_interval: int = max(30, self._env_int("ENGINE_SIGNAL_INTERVAL_SECONDS", 60))
+        self._secondary_signal_interval: int = max(
+            self._signal_interval,
+            self._env_int("ENGINE_SECONDARY_SIGNAL_INTERVAL_SECONDS", 300),
+        )
+        self._cycle_interval: int = self._signal_interval
         self._monitor_interval: int = max(1, self._env_int("ENGINE_MONITOR_INTERVAL_SECONDS", 10))
+        self._snapshot_interval: int = max(5, self._env_int("ENGINE_SNAPSHOT_INTERVAL_SECONDS", 10))
         self._align_signal_to_interval: bool = self._env_bool("ENGINE_ALIGN_SIGNAL_TO_INTERVAL", True)
         self._watchdog_missed_cycles: int = max(2, self._env_int("ENGINE_WATCHDOG_MISSED_CYCLES", 2))
         self._api_errors: int = 0
         self._auto_train_attempted: bool = False
         self._accept_new_trades: bool = True
-        self._last_signal_bucket: Optional[int] = None
+        self._market_data_status: Dict[str, Any] = self.fetcher.get_market_data_status(ACTIVE_SYMBOL)
+        self._last_signal_bucket: Optional[int] = None  # backward compatibility field
+        self._cycle_buckets: Dict[str, int] = {}
         self._last_signal_cycle_monotonic: float = time.monotonic()
         self._watchdog_last_warning_monotonic: float = 0.0
+        self._last_snapshot_mono: float = 0.0
         self._last_cycle_reason: str = "startup"
         self._no_trade_reason_counts: Dict[str, int] = {}
 
@@ -199,22 +218,63 @@ class TradingEngine:
         self._health_started_at = time.monotonic()
         self._health_server: Optional[HealthServer] = None
         self._start_health_server()
+        self._save_engine_state("accept_new_trades", self._accept_new_trades)
+        self._save_engine_state("market_data_status", self._market_data_status)
+
+        startup_diag_raw = self.fetcher.startup_diagnostics(self.mode)
+        startup_diag = startup_diag_raw if isinstance(startup_diag_raw, dict) else {}
+        self._market_data_status = dict(startup_diag)
+        self._save_engine_state("market_data_status", self._market_data_status)
+        if not bool(startup_diag.get("can_trade", True)):
+            self._accept_new_trades = False
+            startup_error = str(
+                startup_diag.get("startup_error")
+                or "Market-data startup validation failed; new trades are disabled."
+            )
+            self._last_cycle_reason = "market_data_startup_check_failed"
+            self._save_engine_state("accept_new_trades", self._accept_new_trades)
+            self._save_engine_state("last_cycle_reason", self._last_cycle_reason)
+            logger.error(
+                "[ENGINE] Startup check blocked trading for {}: {}",
+                ACTIVE_SYMBOL,
+                startup_error,
+            )
 
         self._tft_retries: int = 0
         self._tft_disabled_notice_emitted: bool = False
-        self._symbol_slug: str = str(os.getenv("SYMBOL", XRP_ONLY_SYMBOL)).split("-")[0].lower()
+        self._tft_retry_backoff_seconds: int = max(
+            60,
+            self._env_int("TFT_MODEL_RETRY_BACKOFF_SECONDS", 900),
+        )
+        self._next_tft_retry_monotonic: float = 0.0
+        self._tft_scan_limit_per_cycle: int = max(
+            1,
+            self._env_int("TFT_MODEL_SCAN_LIMIT_PER_CYCLE", 16),
+        )
+        self._symbol_slug: str = str(os.getenv("SYMBOL", ACTIVE_SYMBOL)).split("-")[0].lower()
         self._tft_disable_flag_path = Path(
             os.getenv("TFT_DISABLE_FLAG_PATH", "/app/state/tft_disabled.flag")
         )
-        self._tft_disabled = self._tft_disable_flag_path.exists()
-        if self._tft_disabled:
+        # Only respect env var, not filesystem flags
+        force_disable = os.getenv("TFT_FORCE_DISABLE", "").strip().lower() in ("true", "1", "yes")
+        self._tft_disabled = force_disable
+        if force_disable:
             logger.warning(
-                "TFT disabled by flag for {}: {}",
+                "TFT disabled by TFT_FORCE_DISABLE env var for {}", self._symbol_slug
+            )
+            self._apply_xgb_fallback_mode()
+        elif self._tft_disable_flag_path.exists():
+            logger.info(
+                "Stale TFT disable flag found for {} at {}. Cleaning up (not enforced without TFT_FORCE_DISABLE).",
                 self._symbol_slug,
                 self._tft_disable_flag_path,
             )
-            self._apply_xgb_fallback_mode()
+            try:
+                self._tft_disable_flag_path.unlink(missing_ok=True)
+            except Exception as exc:
+                logger.warning("Could not remove stale TFT flag: {}", exc)
 
+        self._engine_state: str = "INIT"  # INIT, LOADING_MODEL, ACTIVE, DEGRADED_FALLBACK, HALTED
         self._state_lock = threading.Lock()
         self._cycle_in_progress: bool = False
         self._inference_in_progress: bool = False
@@ -223,8 +283,12 @@ class TradingEngine:
         self.trade_history: List[str] = []
         self.stats = EngineRuntimeStats()
         logger.info(
-            "[ENGINE] Decision cadence configured: interval={}s align={} watchdog={} cycles",
-            self._cycle_interval,
+            "[ENGINE] Cadence market={}s signal={}s secondary={}s monitor={}s snapshot={}s align={} watchdog={} cycles",
+            self._market_interval,
+            self._signal_interval,
+            self._secondary_signal_interval,
+            self._monitor_interval,
+            self._snapshot_interval,
             self._align_signal_to_interval,
             self._watchdog_missed_cycles,
         )
@@ -246,12 +310,25 @@ class TradingEngine:
 
     def _health_payload(self) -> Dict[str, object]:
         uptime_seconds = int(max(0.0, time.monotonic() - self._health_started_at))
+        market_status = self.fetcher.get_market_data_status(ACTIVE_SYMBOL)
+        self._market_data_status = market_status
         return {
             "status": "ok" if self._health_ready else "starting",
             "ready": self._health_ready,
             "mode": self.mode.lower(),
+            "engine_state": getattr(self, "_engine_state", "UNKNOWN"),
+            "model_loaded": bool(self.predictor.model is not None) if hasattr(self, "predictor") else False,
+            "model_version": getattr(self.predictor, "model_version", "") if hasattr(self, "predictor") else "",
+            "tft_disabled": getattr(self, "_tft_disabled", False),
             "last_cycle_reason": self._last_cycle_reason,
             "uptime_seconds": uptime_seconds,
+            "symbol": ACTIVE_SYMBOL,
+            "market_data_source": market_status.get("market_data_source", "public_ticker"),
+            "ticker_source": market_status.get("ticker_source", "unknown"),
+            "orderbook_source": market_status.get("orderbook_source", "unknown"),
+            "synthetic_active": bool(market_status.get("synthetic_active", False)),
+            "accept_new_trades": bool(self._accept_new_trades),
+            "startup_error": market_status.get("startup_error", ""),
         }
 
     def start(self, model_version: Optional[str] = None) -> None:
@@ -262,6 +339,7 @@ class TradingEngine:
             logger.info("TFT AI TRADING ENGINE - STARTING")
             logger.info("=" * 60)
 
+            self._engine_state = "LOADING_MODEL"
             self._health_ready = True
             self.reconciliation.start()
 
@@ -269,10 +347,35 @@ class TradingEngine:
             if model_loaded:
                 model_loaded = self._activate_after_model_load()
                 if not model_loaded:
-                    logger.warning("Loaded model is incompatible with XRP-only runtime; entering standby mode.")
+                    logger.warning(
+                        f"Loaded model is incompatible with {ACTIVE_SYMBOL} runtime; "
+                        f"entering DEGRADED_FALLBACK mode. Trading continues with XGB only."
+                    )
+                    self._engine_state = "DEGRADED_FALLBACK"
+                    self._apply_xgb_fallback_mode()
+                else:
+                    self._engine_state = "ACTIVE"
+            else:
+                self._engine_state = "DEGRADED_FALLBACK"
+
+            logger.bind(
+                event="ENGINE_STATE_RESOLVED",
+                engine_state=self._engine_state,
+                model_loaded=model_loaded,
+                model_version=self.predictor.model_version or "none",
+                symbol=ACTIVE_SYMBOL,
+                mode=self.mode,
+            ).info("ENGINE_STATE_RESOLVED")
+            if self._engine_state == "DEGRADED_FALLBACK":
+                logger.bind(event="FALLBACK_MODE_ACTIVE", symbol=ACTIVE_SYMBOL).warning(
+                    "FALLBACK_MODE_ACTIVE"
+                )
 
             self._save_engine_state("running", True)
+            self._restore_runtime_state()
             last_signal_time = 0.0
+            last_secondary_signal_time = 0.0
+            last_market_time = 0.0
             last_feedback_check = 0.0
             last_model_check = 0.0
 
@@ -282,11 +385,15 @@ class TradingEngine:
                         (
                             model_loaded,
                             last_signal_time,
+                            last_secondary_signal_time,
+                            last_market_time,
                             last_feedback_check,
                             last_model_check,
                         ) = self._run_trading_cycle(
                             model_loaded=model_loaded,
                             last_signal_time=last_signal_time,
+                            last_secondary_signal_time=last_secondary_signal_time,
+                            last_market_time=last_market_time,
                             last_feedback_check=last_feedback_check,
                             last_model_check=last_model_check,
                         )
@@ -312,7 +419,9 @@ class TradingEngine:
     def _load_startup_model(self, model_version: Optional[str]) -> bool:
         if not HAS_TORCH:
             logger.error("Torch not installed. Install compatible version.")
-            logger.warning("Engine will continue in standby mode.")
+            logger.warning("Engine will continue in DEGRADED_FALLBACK mode (XGB only).")
+            self._engine_state = "DEGRADED_FALLBACK"
+            self._apply_xgb_fallback_mode()
             return False
 
         model_loaded = False
@@ -322,40 +431,76 @@ class TradingEngine:
                 model_loaded = True
             except Exception as exc:
                 logger.error(f"Failed to load model {model_version}: {exc}")
-                logger.warning("Engine will continue in standby mode.")
+                logger.warning("Engine will continue in DEGRADED_FALLBACK mode (XGB only).")
+                self._engine_state = "DEGRADED_FALLBACK"
+                self._apply_xgb_fallback_mode()
             return model_loaded
 
         model_loaded = self._ensure_model_available()
         if not model_loaded:
-            logger.warning("No loadable model found. Engine will run in standby mode.")
+            logger.warning(
+                "No loadable TFT model found. Engine entering DEGRADED_FALLBACK mode. "
+                "Trading continues with XGB meta-model only."
+            )
+            self._engine_state = "DEGRADED_FALLBACK"
+            self._apply_xgb_fallback_mode()
+        else:
+            self._engine_state = "ACTIVE"
         return model_loaded
 
     def _run_trading_cycle(
         self,
         model_loaded: bool,
         last_signal_time: float,
+        last_secondary_signal_time: float,
+        last_market_time: float,
         last_feedback_check: float,
         last_model_check: float,
-    ) -> tuple[bool, float, float, float]:
+    ) -> tuple[bool, float, float, float, float, float]:
         now = time.monotonic()
         now_dt = datetime.utcnow()
         self._handle_pending_hard_reset()
         self._handle_pending_paper_reset()
 
-        # If no model loaded, periodically check for one.
+        # If no model loaded, periodically check for one — but STILL TRADE using fallback.
         if not model_loaded:
-            if now - last_model_check >= 30:
+            if now - last_model_check >= 60:
                 last_model_check = now
-                model_loaded = self._ensure_model_available()
-                if model_loaded:
-                    model_loaded = self._activate_after_model_load()
-                    if not model_loaded:
-                        logger.warning(
-                            "Loaded model failed XRP vocabulary startup checks; waiting for a compatible model..."
-                        )
+                if now < self._next_tft_retry_monotonic:
+                    remaining = max(0, int(self._next_tft_retry_monotonic - now))
+                    logger.debug(
+                        "TFT reload backoff active for {} ({}s remaining). Trading in DEGRADED_FALLBACK mode.",
+                        self._symbol_slug,
+                        remaining,
+                    )
                 else:
-                    logger.debug("Still waiting for a loadable model...")
-            return model_loaded, last_signal_time, last_feedback_check, last_model_check
+                    model_loaded = self._ensure_model_available()
+                    if model_loaded:
+                        model_loaded = self._activate_after_model_load()
+                        if model_loaded:
+                            self._engine_state = "ACTIVE"
+                            logger.info("TFT model loaded successfully. Engine state: ACTIVE")
+                        else:
+                            logger.warning(
+                                f"Loaded model failed {ACTIVE_SYMBOL} vocabulary startup checks; "
+                                f"continuing in DEGRADED_FALLBACK mode."
+                            )
+                            self._engine_state = "DEGRADED_FALLBACK"
+                    else:
+                        logger.debug("Still waiting for a loadable TFT model. Trading in DEGRADED_FALLBACK mode.")
+            # CRITICAL: Do NOT return early — fall through to signal generation
+            # so the engine trades using XGB fallback even without TFT.
+
+        run_market, updated_last_market_time = self._should_run_timed_cycle(
+            key="market_data",
+            interval_seconds=self._market_interval,
+            now_dt=now_dt,
+            now_mono=now,
+            last_run_time=last_market_time,
+        )
+        if run_market:
+            last_market_time = updated_last_market_time
+            self._market_data_cycle()
 
         # Monitor open position (frequent).
         with self._inference_scope():
@@ -365,28 +510,63 @@ class TradingEngine:
 
         # Shutdown is checked before opening any new trade cycle.
         if self.shutdown_controller.should_stop():
-            return model_loaded, last_signal_time, last_feedback_check, last_model_check
+            return (
+                model_loaded,
+                last_signal_time,
+                last_secondary_signal_time,
+                last_market_time,
+                last_feedback_check,
+                last_model_check,
+            )
 
-        # Signal generation (less frequent).
-        run_signal, updated_last_signal_time = self._should_run_signal_cycle(
+        run_signal, updated_last_signal_time = self._should_run_timed_cycle(
+            key="primary_signal",
+            interval_seconds=self._signal_interval,
             now_dt=now_dt,
             now_mono=now,
-            last_signal_time=last_signal_time,
+            last_run_time=last_signal_time,
         )
         if run_signal:
             last_signal_time = updated_last_signal_time
-            self._signal_cycle()
+            self._signal_cycle(cycle_label="1m")
+
+        run_secondary, updated_last_secondary = self._should_run_timed_cycle(
+            key="secondary_signal",
+            interval_seconds=self._secondary_signal_interval,
+            now_dt=now_dt,
+            now_mono=now,
+            last_run_time=last_secondary_signal_time,
+        )
+        if run_secondary:
+            last_secondary_signal_time = updated_last_secondary
+            self._signal_cycle(cycle_label="5m")
+
         self._watchdog_check(now)
+        if now - self._last_snapshot_mono >= self._snapshot_interval:
+            self._last_snapshot_mono = now
+            self._persist_runtime_snapshots()
 
         # Periodic feedback check.
         if now - last_feedback_check >= 3600:
             last_feedback_check = now
             self._feedback_cycle()
 
+        # Retraining check: log at most once per hour, never block trading
+        if not hasattr(self, '_last_retrain_log_time'):
+            self._last_retrain_log_time = 0.0
         if self.feedback.should_retrain():
-            logger.info("Model retraining recommended")
+            if now - self._last_retrain_log_time >= 3600:
+                self._last_retrain_log_time = now
+                logger.info("Model retraining recommended (logged once/hour, does not block trading)")
 
-        return model_loaded, last_signal_time, last_feedback_check, last_model_check
+        return (
+            model_loaded,
+            last_signal_time,
+            last_secondary_signal_time,
+            last_market_time,
+            last_feedback_check,
+            last_model_check,
+        )
 
     def _handle_closed_trade(self, closed_trade_id: str) -> None:
         self.feedback.analyze_trade(closed_trade_id)
@@ -416,6 +596,7 @@ class TradingEngine:
             self.open_positions.remove(closed_trade_id)
         self.trade_history.append(closed_trade_id)
         self.stats.record_trade(trade_pnl, trade_r_multiple)
+        self._persist_runtime_snapshots()
 
         evolved = self.strategy_evolution.evolve_if_due(
             open_trade_count=self._count_open_trades()
@@ -437,12 +618,55 @@ class TradingEngine:
             pending_balance = state.value.get("initial_balance")
             logger.info("Reloading paper executor state after reset (initial={})", pending_balance)
             self.executor.reload_runtime_state()
+            self.safety.load_state(force_refresh=True)
+            self.safety.reset_consecutive_losses()
+
+            baseline_equity = float(
+                pending_balance
+                if pending_balance is not None
+                else self.executor.get_balance()
+            )
+            now_dt = datetime.utcnow()
+            today = now_dt.date().isoformat()
+            rebaseline_payload = {
+                "value": True,
+                "reason": "paper_reset_applied",
+                "timestamp": now_dt.isoformat(),
+            }
+
+            def _upsert_state(key: str, payload: Dict[str, Any]) -> None:
+                row = session.query(EngineState).filter(EngineState.key == key).first()
+                if row:
+                    row.value = payload
+                    row.updated_at = now_dt
+                else:
+                    session.add(EngineState(key=key, value=payload))
+
+            # Re-arm baselines using post-reset equity to avoid stale kill-switch trips.
+            _upsert_state("kill_switch_day_start_equity", {"date": today, "equity": baseline_equity})
+            _upsert_state("kill_switch_initial_equity", {"equity": baseline_equity})
+            _upsert_state("kill_switch_rebaseline", rebaseline_payload)
+            _upsert_state("prop_day_start_equity", {"value": {"date": today, "equity": baseline_equity}})
+            _upsert_state("prop_max_equity", {"value": baseline_equity})
+            _upsert_state("single_symbol_loss_streak", {"value": 0})
+            _upsert_state("prop_cooldown_until", {"value": None})
+            _upsert_state("prop_rebaseline_requested", rebaseline_payload)
+
             state.value = {"value": False}
-            state.updated_at = datetime.utcnow()
+            state.updated_at = now_dt
             session.commit()
         except Exception as exc:
             session.rollback()
             logger.error("Failed to apply pending paper reset: {}", exc)
+            # Prevent reset-loop storms if rebaseline writes fail.
+            try:
+                state = session.query(EngineState).filter(EngineState.key == "paper_reset_pending").first()
+                if state:
+                    state.value = {"value": False, "error": str(exc)}
+                    state.updated_at = datetime.utcnow()
+                    session.commit()
+            except Exception:
+                session.rollback()
         finally:
             session.close()
 
@@ -471,8 +695,8 @@ class TradingEngine:
         finally:
             session.close()
 
-    def _model_supports_xrp(self) -> bool:
-        """Validate loaded model vocabulary for XRP-only runtime."""
+    def _model_supports_symbol(self) -> bool:
+        """Validate loaded model vocabulary for the active symbol."""
         try:
             supported_pairs = self.decision._get_supported_pairs()
         except Exception as exc:
@@ -481,20 +705,21 @@ class TradingEngine:
 
         supported_list = sorted(supported_pairs)
         logger.info("Model supports: {}", supported_list)
-        if XRP_ONLY_SYMBOL not in supported_pairs:
+        if ACTIVE_SYMBOL not in supported_pairs:
             logger.error(
                 "Loaded model '{}' excludes required symbol {}",
                 self.predictor.model_version or "unknown",
-                XRP_ONLY_SYMBOL,
+                ACTIVE_SYMBOL,
             )
             return False
         return True
 
     def _activate_after_model_load(self) -> bool:
         """Run startup hooks after a model is successfully loaded."""
-        if not self._model_supports_xrp():
+        if not self._model_supports_symbol():
             return False
         self._tft_retries = 0
+        self._next_tft_retry_monotonic = 0.0
         self.safety.load_state()
         self.strategy_evolution.apply_to_decision(self.decision)
         self._save_engine_state("thresholds", self.decision.get_current_thresholds())
@@ -521,11 +746,11 @@ class TradingEngine:
             if trained_version:
                 try:
                     self.predictor.load(trained_version)
-                    if not self._model_supports_xrp():
+                    if not self._model_supports_symbol():
                         logger.error(
                             "Auto-trained model {} does not include {} in vocabulary.",
                             trained_version,
-                            XRP_ONLY_SYMBOL,
+                            ACTIVE_SYMBOL,
                         )
                         return False
                     logger.info(f"Loaded newly trained model: {trained_version}")
@@ -544,15 +769,31 @@ class TradingEngine:
         if not models:
             return False
 
+        scanned = 0
+        symbol_mismatch_count = 0
         for version in reversed(models):
+            if scanned >= self._tft_scan_limit_per_cycle:
+                logger.debug(
+                    "TFT scan limit reached for {} (limit={} per cycle).",
+                    self._symbol_slug,
+                    self._tft_scan_limit_per_cycle,
+                )
+                break
+            scanned += 1
             try:
                 self.predictor.load(version)
-                if not self._model_supports_xrp():
+                if not self._model_supports_symbol():
+                    symbol_mismatch_count += 1
                     logger.warning(
                         "Skipping model {} because it does not include {} in vocabulary.",
                         version,
-                        XRP_ONLY_SYMBOL,
+                        ACTIVE_SYMBOL,
                     )
+                    try:
+                        self.predictor.model = None
+                        self.predictor.model_version = "tft_disabled"
+                    except Exception:
+                        pass
                     continue
                 logger.info(f"Loaded model: {version}")
                 return True
@@ -563,9 +804,17 @@ class TradingEngine:
                 message = str(exc).lower()
                 import_related = "pytorch-forecasting required" in message
                 self._on_tft_load_failure(version, exc, import_related=import_related)
-                if import_related:
+                if import_related or self._tft_retries > MAX_TFT_RETRIES:
                     return False
 
+        if scanned > 0 and scanned == symbol_mismatch_count:
+            self._disable_tft_permanently(reason=f"no_compatible_model_for_{ACTIVE_SYMBOL}")
+
+        try:
+            self.predictor.model = None
+            self.predictor.model_version = "tft_disabled"
+        except Exception:
+            pass
         return False
 
     def _on_tft_load_failure(self, version: str, exc: Exception, import_related: bool) -> None:
@@ -584,48 +833,49 @@ class TradingEngine:
             self._disable_tft_permanently(reason=f"retries_exceeded:{self._tft_retries}")
 
     def _is_tft_disabled(self) -> bool:
-        if self._tft_disabled:
+        """
+        TFT is only disabled if TFT_FORCE_DISABLE=true env var is set.
+        Filesystem flags are informational only and auto-cleaned on startup.
+        """
+        force_disable = os.getenv("TFT_FORCE_DISABLE", "").strip().lower() in ("true", "1", "yes")
+        if force_disable:
             if not self._tft_disabled_notice_emitted:
                 logger.warning(
-                    "TFT is permanently disabled for {}. Using fallback mode only.",
+                    "TFT disabled by TFT_FORCE_DISABLE env var for {}.",
                     self._symbol_slug,
                 )
                 self._tft_disabled_notice_emitted = True
+                self._tft_disabled = True
             return True
-        if self._tft_disable_flag_path.exists():
-            self._tft_disabled = True
-            self._apply_xgb_fallback_mode()
-            if not self._tft_disabled_notice_emitted:
-                logger.warning(
-                    "Detected TFT disable flag for {}: {}",
-                    self._symbol_slug,
-                    self._tft_disable_flag_path,
-                )
-                self._tft_disabled_notice_emitted = True
-            return True
+        # Auto-clean stale filesystem flags left by the monitor
+        if self._tft_disabled and not force_disable:
+            self._tft_disabled = False
+            logger.info("TFT re-enabled (no TFT_FORCE_DISABLE env var set) for {}", self._symbol_slug)
         return False
 
     def _disable_tft_permanently(self, reason: str) -> None:
-        if self._tft_disabled:
-            return
-        self._tft_disabled = True
-        self._apply_xgb_fallback_mode()
-        try:
-            self._tft_disable_flag_path.parent.mkdir(parents=True, exist_ok=True)
-            self._tft_disable_flag_path.write_text(
-                f"disabled_at={datetime.utcnow().isoformat()}Z\nreason={reason}\n",
-                encoding="utf-8",
-            )
-        except Exception as exc:
-            logger.error("Failed to write TFT disable flag: {}", exc)
-        logger.warning(
-            "TFT disabled permanently for {} after {} retries. Flag: {}",
-            self._symbol_slug,
-            self._tft_retries,
-            self._tft_disable_flag_path,
+        """Switch to XGB fallback mode but do NOT write a filesystem disable flag.
+        The engine retries after a backoff interval to avoid model-load thrashing."""
+        self._next_tft_retry_monotonic = max(
+            self._next_tft_retry_monotonic,
+            time.monotonic() + float(self._tft_retry_backoff_seconds),
         )
+        retry_seconds = max(0, int(self._next_tft_retry_monotonic - time.monotonic()))
+        logger.warning(
+            "TFT model load failed for {} ({}). Switching to DEGRADED_FALLBACK mode. "
+            "Next retry in ~{}s.",
+            self._symbol_slug,
+            reason,
+            retry_seconds,
+        )
+        self._apply_xgb_fallback_mode()
 
     def _apply_xgb_fallback_mode(self) -> None:
+        try:
+            self.predictor.model = None
+            self.predictor.model_version = "tft_disabled"
+        except Exception as exc:
+            logger.debug("Could not clear predictor model while entering fallback: {}", exc)
         try:
             self.decision.update_thresholds(
                 {
@@ -744,8 +994,8 @@ class TradingEngine:
         import pandas as pd
 
         _ = pairs
-        symbol = XRP_ONLY_SYMBOL
-        logger.info("Bootstrap universe locked to XRP-USDT")
+        symbol = ACTIVE_SYMBOL
+        logger.info(f"Bootstrap universe locked to {ACTIVE_SYMBOL}")
         try:
             df = self.fetcher.fetch_history(symbol, timeframe, months)
             if df.empty:
@@ -766,16 +1016,201 @@ class TradingEngine:
         now_mono: float,
         last_signal_time: float,
     ) -> tuple[bool, float]:
-        if self._align_signal_to_interval:
-            bucket = int(now_dt.timestamp() // self._cycle_interval)
-            if self._last_signal_bucket is None or bucket > self._last_signal_bucket:
-                self._last_signal_bucket = bucket
-                return True, now_mono
-            return False, last_signal_time
+        signal_interval = int(getattr(self, "_signal_interval", getattr(self, "_cycle_interval", 300)))
+        return self._should_run_timed_cycle(
+            key="primary_signal",
+            interval_seconds=signal_interval,
+            now_dt=now_dt,
+            now_mono=now_mono,
+            last_run_time=last_signal_time,
+        )
 
-        if now_mono - last_signal_time >= self._cycle_interval:
+    def _should_run_timed_cycle(
+        self,
+        *,
+        key: str,
+        interval_seconds: int,
+        now_dt: datetime,
+        now_mono: float,
+        last_run_time: float,
+    ) -> tuple[bool, float]:
+        interval = max(1, int(interval_seconds))
+        if not hasattr(self, "_cycle_buckets") or not isinstance(getattr(self, "_cycle_buckets"), dict):
+            self._cycle_buckets = {}
+        if self._align_signal_to_interval:
+            bucket = int(now_dt.timestamp() // interval)
+            if key == "primary_signal" and hasattr(self, "_last_signal_bucket") and self._last_signal_bucket is not None:
+                last_bucket = int(self._last_signal_bucket)
+            else:
+                last_bucket = self._cycle_buckets.get(key)
+            if last_bucket is None or bucket > last_bucket:
+                self._cycle_buckets[key] = bucket
+                if key == "primary_signal":
+                    self._last_signal_bucket = bucket
+                return True, now_mono
+            return False, last_run_time
+
+        if now_mono - last_run_time >= interval:
             return True, now_mono
-        return False, last_signal_time
+        return False, last_run_time
+
+    def _market_data_cycle(self) -> None:
+        try:
+            ticker = self.fetcher.get_ticker(ACTIVE_SYMBOL)
+            orderbook = self.fetcher.get_orderbook(ACTIVE_SYMBOL, depth=20)
+            bid = float(ticker.get("best_bid") or ticker.get("price") or 0.0)
+            ask = float(ticker.get("best_ask") or ticker.get("price") or 0.0)
+            price = float(ticker.get("price") or 0.0)
+            spread_pct = ((ask - bid) / price) if price > 0 else 0.0
+            bid_volume = float(sum(float(level[1]) for level in orderbook.get("bids", []) if len(level) >= 2))
+            ask_volume = float(sum(float(level[1]) for level in orderbook.get("asks", []) if len(level) >= 2))
+            imbalance = ((bid_volume - ask_volume) / (bid_volume + ask_volume)) if (bid_volume + ask_volume) > 0 else 0.0
+            market_status = self.fetcher.get_market_data_status(ACTIVE_SYMBOL)
+            self._market_data_status = market_status
+
+            snapshot = {
+                "symbol": ACTIVE_SYMBOL,
+                "timestamp": datetime.utcnow().isoformat(),
+                "price": price,
+                "best_bid": bid,
+                "best_ask": ask,
+                "spread_pct": spread_pct,
+                "volume_imbalance": imbalance,
+                "source": str(ticker.get("source", "unknown")),
+                "ticker_source": str(market_status.get("ticker_source", ticker.get("source", "unknown"))),
+                "orderbook_source": str(market_status.get("orderbook_source", orderbook.get("source", "unknown"))),
+                "market_data_source": str(market_status.get("market_data_source", "public_ticker")),
+                "synthetic_active": bool(market_status.get("synthetic_active", False)),
+            }
+            self._save_engine_state("market_snapshot", snapshot)
+            self._save_engine_state("market_data_status", market_status)
+            logger.bind(event="MARKET_DATA_UPDATE", **snapshot).info("MARKET_DATA_UPDATE")
+            publish_event("MARKET_DATA_UPDATE", snapshot)
+        except Exception as exc:
+            logger.warning("Market data cycle failed for {}: {}", ACTIVE_SYMBOL, exc)
+
+    def _restore_runtime_state(self) -> None:
+        session = get_session()
+        try:
+            open_rows = (
+                session.query(Trade)
+                .filter(Trade.status == "open")
+                .order_by(Trade.entry_time.asc(), Trade.id.asc())
+                .all()
+            )
+            closed_rows = (
+                session.query(Trade)
+                .filter(Trade.status == "closed")
+                .order_by(Trade.exit_time.asc(), Trade.id.asc())
+                .all()
+            )
+
+            self.open_positions = [str(t.trade_id) for t in open_rows if t.trade_id]
+            self.trade_history = [str(t.trade_id) for t in closed_rows[-200:] if t.trade_id]
+            self.stats.reset()
+            for trade in closed_rows:
+                self.stats.record_trade(float(trade.pnl or 0.0), float(trade.r_multiple or 0.0))
+
+            logger.bind(
+                event="STATE_RESTORED",
+                symbol=ACTIVE_SYMBOL,
+                open_positions=len(self.open_positions),
+                closed_trades=self.stats.total_trades,
+                total_pnl=round(self.stats.total_pnl, 4),
+            ).info("STATE_RESTORED")
+        except Exception as exc:
+            logger.warning("Runtime state reconstruction failed: {}", exc)
+        finally:
+            session.close()
+
+    def _persist_runtime_snapshots(self) -> None:
+        session = get_session()
+        try:
+            balance = 0.0
+            realized = 0.0
+            unrealized = 0.0
+            exposure = 0.0
+            open_count = 0
+            positions: Dict[str, Any] = {}
+
+            if hasattr(self.executor, "get_metrics_snapshot"):
+                snap = self.executor.get_metrics_snapshot()
+                balance = float(snap.get("balance", 0.0) or 0.0)
+                realized = float(snap.get("realized_pnl", 0.0) or 0.0)
+                unrealized = float(snap.get("unrealized_pnl", 0.0) or 0.0)
+                positions = snap.get("positions", {}) or {}
+            else:
+                balance = float(self.executor.get_balance() or 0.0)
+                positions = self.executor.get_positions() or {}
+
+            for symbol, payload in positions.items():
+                if isinstance(payload, dict):
+                    qty = float(payload.get("quantity", 0.0) or 0.0)
+                    entry_ref = float(payload.get("avg_entry_price", 0.0) or 0.0)
+                else:
+                    qty = 0.0
+                    entry_ref = 0.0
+                if abs(qty) <= 1e-12:
+                    continue
+                open_count += 1
+                try:
+                    mark = float(self.fetcher.get_ticker(symbol).get("price") or 0.0)
+                except Exception:
+                    mark = entry_ref
+                exposure += abs(qty * mark)
+
+            equity = float(balance + unrealized)
+
+            session.add(
+                EquityHistory(
+                    symbol=ACTIVE_SYMBOL,
+                    mode=self.mode,
+                    balance=float(balance),
+                    realized_pnl=float(realized),
+                    unrealized_pnl=float(unrealized),
+                    equity=float(equity),
+                    exposure=float(exposure),
+                    open_positions=int(open_count),
+                )
+            )
+
+            metrics = PerformanceTracker(ACTIVE_SYMBOL).compute_metrics()
+            session.add(
+                MetricSnapshot(
+                    symbol=ACTIVE_SYMBOL,
+                    sharpe=float(metrics.get("sharpe_ratio", 0.0) or 0.0),
+                    sortino=float(metrics.get("sortino_ratio", 0.0) or 0.0),
+                    max_drawdown=float(metrics.get("max_drawdown", 0.0) or 0.0),
+                    win_rate=float(metrics.get("win_rate", 0.0) or 0.0),
+                    profit_factor=float(metrics.get("profit_factor", 0.0) or 0.0),
+                    average_trade=float(metrics.get("average_trade", 0.0) or 0.0),
+                    exposure=float(metrics.get("exposure_pct", 0.0) or 0.0),
+                    equity=float(equity),
+                    rolling_volatility=float(metrics.get("rolling_volatility", 0.0) or 0.0),
+                    total_trades=int(metrics.get("total_trades", 0) or 0),
+                    winning_trades=int(metrics.get("win_count", 0) or 0),
+                    losing_trades=int(metrics.get("loss_count", 0) or 0),
+                )
+            )
+
+            stats_row = session.query(Statistics).order_by(Statistics.id.asc()).first()
+            if stats_row is None:
+                stats_row = Statistics()
+                session.add(stats_row)
+            stats_row.total_trades = int(self.stats.total_trades)
+            stats_row.wins = int(self.stats.wins)
+            stats_row.losses = int(self.stats.losses)
+            stats_row.win_rate = float(self.stats.win_rate)
+            stats_row.avg_r = float(self.stats.avg_r)
+            stats_row.total_pnl = float(self.stats.total_pnl)
+            stats_row.unrealized_pnl = float(unrealized)
+
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            logger.debug("Snapshot persistence skipped: {}", exc)
+        finally:
+            session.close()
 
     def _watchdog_check(self, now_mono: float) -> None:
         if self.shutdown_controller.should_stop():
@@ -860,17 +1295,99 @@ class TradingEngine:
         finally:
             session.close()
 
-    def _signal_cycle(self) -> None:
+    def _increment_engine_counter(self, key: str, amount: int = 1) -> None:
+        session = get_session()
+        try:
+            state = session.query(EngineState).filter(EngineState.key == key).first()
+            current = 0
+            if state and isinstance(state.value, dict):
+                try:
+                    current = int(state.value.get("value", 0) or 0)
+                except Exception:
+                    current = 0
+            payload = {"value": int(current + int(amount))}
+            if state:
+                state.value = payload
+                state.updated_at = datetime.utcnow()
+            else:
+                session.add(EngineState(key=key, value=payload))
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            logger.debug("Could not increment counter {}: {}", key, exc)
+        finally:
+            session.close()
+
+    def _increment_rejection_reason(self, reason: str) -> None:
+        reason_key = str(reason or "unknown").strip() or "unknown"
+        session = get_session()
+        try:
+            state = session.query(EngineState).filter(EngineState.key == "trade_rejection_reasons").first()
+            data: Dict[str, int] = {}
+            if state and isinstance(state.value, dict):
+                raw = state.value.get("value", {})
+                if isinstance(raw, dict):
+                    for key, value in raw.items():
+                        try:
+                            data[str(key)] = int(value)
+                        except Exception:
+                            continue
+            data[reason_key] = int(data.get(reason_key, 0) + 1)
+            payload = {"value": data}
+            if state:
+                state.value = payload
+                state.updated_at = datetime.utcnow()
+            else:
+                session.add(EngineState(key="trade_rejection_reasons", value=payload))
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            logger.debug("Could not update rejection reason counter {}: {}", reason_key, exc)
+        finally:
+            session.close()
+
+    def _record_trade_rejection(self, reason: str) -> None:
+        self._increment_engine_counter("trade_rejection_count", 1)
+        self._increment_rejection_reason(reason)
+
+    def _mark_cycle_started(self, cycle_label: str) -> None:
+        now_iso = datetime.utcnow().isoformat()
+        self._increment_engine_counter("decision_cycle_count", 1)
+        self._save_engine_state("last_decision_timestamp", now_iso)
+        self._save_engine_state("last_cycle_terminal_state", "IN_PROGRESS")
+        self._save_engine_state("last_cycle_reason", f"cycle_{cycle_label}_started")
+        active_model_name = str(self.predictor.model_version or "xgb_meta_fallback")
+        self._save_engine_state("active_model_name", active_model_name)
+
+    def _mark_cycle_terminal(self, terminal_state: str, reason: str) -> None:
+        now_iso = datetime.utcnow().isoformat()
+        normalized_terminal = str(terminal_state or "TRADE_SKIPPED_WITH_REASON")
+        normalized_reason = str(reason or "unspecified")
+        self._last_cycle_reason = normalized_reason
+        self._save_engine_state("last_cycle_terminal_state", normalized_terminal)
+        self._save_engine_state("last_cycle_reason", normalized_reason)
+        self._save_engine_state("last_decision_timestamp", now_iso)
+        if normalized_terminal == "TRADE_EXECUTED":
+            self._save_engine_state("last_trade_timestamp", now_iso)
+
+    def _signal_cycle(self, cycle_label: str = "1m") -> None:
         """Run one signal generation and execution cycle."""
         self._last_signal_cycle_monotonic = time.monotonic()
+        self._mark_cycle_started(cycle_label)
         if self.shutdown_controller.should_stop() or not self._accept_new_trades:
             logger.info("[ENGINE] Shutdown requested; skipping new trade execution")
             self._register_no_trade_reason("shutdown_or_accept_new_trades_disabled", persist_event=False)
+            publish_event("RISK_REJECTED", {"symbol": ACTIVE_SYMBOL, "reason": "shutdown", "cycle": cycle_label})
+            self._record_trade_rejection("shutdown_or_accept_new_trades_disabled")
+            self._mark_cycle_terminal("ENGINE_HALTED", "shutdown_or_accept_new_trades_disabled")
             return
 
         if is_safe_mode():
             logger.critical("[ENGINE] SAFE_MODE active; trading disabled until manual reset")
             self._register_no_trade_reason("safe_mode_active")
+            publish_event("RISK_REJECTED", {"symbol": ACTIVE_SYMBOL, "reason": "safe_mode", "cycle": cycle_label})
+            self._record_trade_rejection("safe_mode_active")
+            self._mark_cycle_terminal("ENGINE_HALTED", "safe_mode_active")
             return
 
         try:
@@ -886,6 +1403,7 @@ class TradingEngine:
                 "[ENGINE] Kill-switch triggered ({}). Closing positions and entering SAFE_MODE", reason
             )
             self._register_no_trade_reason("kill_switch_triggered", detail=reason)
+            publish_event("RISK_REJECTED", {"symbol": ACTIVE_SYMBOL, "reason": f"kill_switch:{reason}", "cycle": cycle_label})
             try:
                 self.safety.pause_trading()
             except Exception:
@@ -894,16 +1412,24 @@ class TradingEngine:
                 self.monitor.force_close_all()
             except Exception:
                 logger.exception("[ENGINE] Failed to force-close positions after kill-switch")
+            self._record_trade_rejection("kill_switch_triggered")
+            self._mark_cycle_terminal("ENGINE_HALTED", "kill_switch_triggered")
             return
 
         can_trade, reason = self.safety.can_trade()
         if not can_trade:
             logger.info(f"Cannot trade: {reason}")
             self._register_no_trade_reason("safety_can_trade_blocked", detail=reason)
+            publish_event("RISK_REJECTED", {"symbol": ACTIVE_SYMBOL, "reason": str(reason), "cycle": cycle_label})
+            self._record_trade_rejection("safety_can_trade_blocked")
+            self._mark_cycle_terminal("TRADE_SKIPPED_WITH_REASON", f"safety_can_trade_blocked:{reason}")
             return
 
         if not settings.trading.trading_enabled:
             self._register_no_trade_reason("trading_disabled")
+            publish_event("RISK_REJECTED", {"symbol": ACTIVE_SYMBOL, "reason": "trading_disabled", "cycle": cycle_label})
+            self._record_trade_rejection("trading_disabled")
+            self._mark_cycle_terminal("TRADE_SKIPPED_WITH_REASON", "trading_disabled")
             return
 
         with self._inference_scope():
@@ -912,9 +1438,36 @@ class TradingEngine:
             logger.debug("No valid signal generated")
             # DecisionEngine already persists no_trade for this branch.
             self._register_no_trade_reason("no_signal_from_decision_engine", persist_event=False)
+            self._record_trade_rejection("no_signal_from_decision_engine")
+            self._mark_cycle_terminal("TRADE_SKIPPED_WITH_REASON", "no_signal_from_decision_engine")
             return
 
-        logger.info(f"Signal generated: {signal.pair} | Confidence: {signal.confidence:.3f}")
+        logger.bind(
+            event="SIGNAL_GENERATED",
+            symbol=signal.pair,
+            side=signal.side,
+            confidence=round(float(signal.confidence), 4),
+            signal_score=round(float(getattr(signal, "signal_score", 0.0)), 4),
+            cycle=cycle_label,
+        ).info("SIGNAL_GENERATED")
+        publish_event(
+            "SIGNAL_GENERATED",
+            {
+                "symbol": signal.pair,
+                "side": signal.side,
+                "confidence": float(signal.confidence),
+                "signal_score": float(getattr(signal, "signal_score", 0.0)),
+                "cycle": cycle_label,
+            },
+        )
+        logger.info(
+            f"SIGNAL GENERATED | symbol={signal.pair} | confidence={signal.confidence:.3f} | "
+            f"tft={signal.tft_score:.3f} | xgb={signal.xgb_score:.3f} | "
+            f"regime={signal.market_regime} | vol_regime={signal.volatility_regime} | "
+            f"expected_move={signal.expected_move:.4f} | prob_up={signal.prob_up:.3f} | "
+            f"prob_down={signal.prob_down:.3f} | entry={signal.entry_price:.6f} | "
+            f"stop={signal.stop_price:.6f} | target={signal.target_price:.6f}"
+        )
 
         if self.safety.check_volatility_circuit_breaker(
             signal.atr / signal.entry_price,
@@ -922,15 +1475,38 @@ class TradingEngine:
         ):
             logger.warning("Circuit breaker: skipping trade")
             self._register_no_trade_reason("volatility_circuit_breaker", signal=signal)
+            publish_event("RISK_REJECTED", {"symbol": signal.pair, "reason": "volatility_circuit_breaker", "cycle": cycle_label})
+            self._record_trade_rejection("volatility_circuit_breaker")
+            self._mark_cycle_terminal("TRADE_SKIPPED_WITH_REASON", "volatility_circuit_breaker")
             return
 
         # Never start a new order submission after shutdown was requested.
         if self.shutdown_controller.should_stop() or not self._accept_new_trades:
             logger.info("[ENGINE] Finishing current cycle without opening new trade")
             self._register_no_trade_reason("shutdown_before_execution", signal=signal, persist_event=False)
+            publish_event("RISK_REJECTED", {"symbol": signal.pair, "reason": "shutdown_before_execution", "cycle": cycle_label})
+            self._record_trade_rejection("shutdown_before_execution")
+            self._mark_cycle_terminal("ENGINE_HALTED", "shutdown_before_execution")
             return
 
         balance = self.executor.get_balance()
+        if settings.trading.trading_mode.upper() == "PAPER":
+            side_for_sizing = str(getattr(signal, "side", "BUY")).upper()
+            cash_balance = max(0.0, float(balance or 0.0))
+            balance = cash_balance
+            try:
+                metrics = self.executor.get_metrics()
+                equity_balance = float((metrics or {}).get("equity", cash_balance))
+                if math.isfinite(equity_balance):
+                    # Side-aware paper sizing:
+                    # - BUY uses available cash (avoid repeated rejected BUYs when cash is nearly exhausted).
+                    # - SELL uses equity (avoid short proceeds inflating position size).
+                    if side_for_sizing == "SELL":
+                        balance = max(0.0, equity_balance)
+                    else:
+                        balance = cash_balance
+            except Exception as exc:
+                logger.debug("Could not use paper metrics for sizing: {}", exc)
         rl_state = {
             "entry_price": signal.entry_price,
             "current_price": signal.entry_price,
@@ -943,28 +1519,24 @@ class TradingEngine:
         }
         risk_multiplier = self.rl_manager.initial_size(rl_state)
         signal.ppo_score = _normalize_ppo_score(risk_multiplier)
-        weight_snapshot = dict(signal.weight_snapshot or {})
-        weight_snapshot.setdefault("tft_weight", float(self.decision.tft_weight))
-        weight_snapshot.setdefault("xgb_weight", float(self.decision.xgb_weight))
-        weight_snapshot.setdefault("ppo_weight", float(self.decision.ppo_weight))
-        weight_total = (
-            float(weight_snapshot.get("tft_weight", 0.0))
-            + float(weight_snapshot.get("xgb_weight", 0.0))
-            + float(weight_snapshot.get("ppo_weight", 0.0))
-        )
-        if weight_total <= 0:
-            weight_snapshot = {"tft_weight": 0.4, "xgb_weight": 0.4, "ppo_weight": 0.2}
-            weight_total = 1.0
+
+        # Aggressive ensemble blending: TFT 50%, XGB 30%, META/PPO 20%
+        tft_conf = float(signal.tft_score)
+        xgb_conf = float(signal.xgb_score)
+        meta_conf = float(signal.ppo_score)
+
+        weight_snapshot = {"tft_weight": 0.5, "xgb_weight": 0.3, "ppo_weight": 0.2}
+        weight_total = 1.0
 
         base_ai_score = _clamp01(
-            (
-                float(signal.tft_score) * float(weight_snapshot.get("tft_weight", 0.0))
-                + float(signal.xgb_score) * float(weight_snapshot.get("xgb_weight", 0.0))
-                + float(signal.ppo_score) * float(weight_snapshot.get("ppo_weight", 0.0))
-            )
-            / weight_total
+            tft_conf * 0.5 + xgb_conf * 0.3 + meta_conf * 0.2
         )
         signal.weight_snapshot = weight_snapshot
+
+        logger.info(
+            f"CONFIDENCE BLEND | TFT={tft_conf:.3f} | XGB={xgb_conf:.3f} | "
+            f"META={meta_conf:.3f} | FINAL={base_ai_score:.3f}"
+        )
 
         governance_decision = self.governance.evaluate(
             signal=signal,
@@ -983,6 +1555,15 @@ class TradingEngine:
         signal.final_ai_score = final_ai_score
         signal.confidence = final_ai_score
 
+        logger.info(
+            f"DECISION FLOW | symbol={signal.pair} | "
+            f"raw_prediction={{prob_up={signal.prob_up:.3f}, prob_down={signal.prob_down:.3f}}} | "
+            f"blended_confidence={final_ai_score:.3f} | threshold=0.45 | "
+            f"regime={signal.market_regime} | "
+            f"position_size_mult={signal.position_size_multiplier:.2f} | "
+            f"governance={governance_decision.code}"
+        )
+
         self.governance.record_audit(
             signal=signal,
             ppo_size_mult=risk_multiplier,
@@ -992,22 +1573,39 @@ class TradingEngine:
 
         if not governance_decision.approve:
             logger.info(
-                f"[GOV] Trade rejected for {signal.pair} "
-                f"(code={governance_decision.code}, risk_mode={governance_decision.risk_mode})"
+                f"TRADE SKIPPED | symbol={signal.pair} | reason=governance_rejected | "
+                f"code={governance_decision.code} | risk_mode={governance_decision.risk_mode} | "
+                f"confidence={final_ai_score:.3f}"
             )
             self._register_no_trade_reason(
                 "governance_rejected",
                 detail=f"{governance_decision.code}:{governance_decision.risk_mode}",
                 signal=signal,
             )
+            publish_event(
+                "RISK_REJECTED",
+                {
+                    "symbol": signal.pair,
+                    "reason": f"governance:{governance_decision.code}",
+                    "cycle": cycle_label,
+                },
+            )
+            self._record_trade_rejection("governance_rejected")
+            self._mark_cycle_terminal("TRADE_SKIPPED_WITH_REASON", f"governance_rejected:{governance_decision.code}")
             return
 
         prop_ok, prop_reason = self.prop_risk.can_open_new_trade(
             execution_in_progress=self._trade_execution_in_progress
         )
         if not prop_ok:
-            logger.warning(f"[RISK] Trade blocked: {prop_reason}")
+            logger.warning(
+                f"TRADE SKIPPED | symbol={signal.pair} | reason=prop_risk_blocked | "
+                f"detail={prop_reason} | confidence={final_ai_score:.3f}"
+            )
             self._register_no_trade_reason("prop_risk_blocked", detail=prop_reason, signal=signal)
+            publish_event("RISK_REJECTED", {"symbol": signal.pair, "reason": f"prop_risk:{prop_reason}", "cycle": cycle_label})
+            self._record_trade_rejection("prop_risk_blocked")
+            self._mark_cycle_terminal("TRADE_SKIPPED_WITH_REASON", f"prop_risk_blocked:{prop_reason}")
             return
 
         final_risk_multiplier = max(
@@ -1015,6 +1613,7 @@ class TradingEngine:
             min(2.0, float(risk_multiplier * governance_decision.size_mult)),
         )
 
+        self._increment_engine_counter("trade_attempt_count", 1)
         with self._trade_execution_scope():
             trade_id = self.executor.execute_signal(
                 signal,
@@ -1024,12 +1623,37 @@ class TradingEngine:
 
         if trade_id:
             self.open_positions.append(trade_id)
-            logger.info(f"Trade executed: {trade_id}")
+            logger.bind(
+                event="TRADE_SUBMITTED",
+                trade_id=trade_id,
+                symbol=signal.pair,
+                side=signal.side,
+                confidence=round(signal.confidence, 4),
+                engine_state=self._engine_state,
+            ).info("TRADE_SUBMITTED")
             self._last_cycle_reason = "trade_opened"
             self._record_trade_opened_event(signal)
+            logger.bind(
+                event="TRADE_OPENED",
+                trade_id=trade_id,
+                symbol=signal.pair,
+                side=signal.side,
+                cycle=cycle_label,
+            ).info("TRADE_OPENED")
+            self._mark_cycle_terminal("TRADE_EXECUTED", "trade_opened")
         else:
-            logger.warning("Trade execution failed")
+            logger.bind(
+                event="TRADE_REJECTED",
+                symbol=signal.pair,
+                side=signal.side,
+                confidence=round(signal.confidence, 4),
+                reason="execution_rejected_or_failed",
+                engine_state=self._engine_state,
+            ).warning("TRADE_REJECTED")
             self._register_no_trade_reason("execution_rejected_or_failed", signal=signal)
+            publish_event("RISK_REJECTED", {"symbol": signal.pair, "reason": "execution_rejected_or_failed", "cycle": cycle_label})
+            self._record_trade_rejection("execution_rejected_or_failed")
+            self._mark_cycle_terminal("TRADE_SKIPPED_WITH_REASON", "execution_rejected_or_failed")
 
     def _record_trade_opened_event(self, signal) -> None:
         """Persist a decision event when a trade IS opened."""
@@ -1093,6 +1717,7 @@ class TradingEngine:
         self.reconciliation.stop()
 
         self._save_engine_state("running", False)
+        self._save_engine_state("accept_new_trades", False)
         self._save_engine_state("thresholds", self.decision.get_current_thresholds())
 
         deadline = time.monotonic() + 30

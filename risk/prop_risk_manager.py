@@ -10,13 +10,14 @@ from typing import Optional
 from loguru import logger
 from sqlalchemy import func
 
-from config.settings import XRP_ONLY_SYMBOL, settings
+from config.settings import ACTIVE_SYMBOL, settings
 from data.database import EngineState, RiskState, Trade, get_session
 
 _STATE_DAY_START_EQUITY = "prop_day_start_equity"
 _STATE_MAX_EQUITY = "prop_max_equity"
 _STATE_COOLDOWN_UNTIL = "prop_cooldown_until"
 _STATE_SINGLE_SYMBOL_LOSS_STREAK = "single_symbol_loss_streak"
+_STATE_REBASELINE_REQUESTED = "prop_rebaseline_requested"
 
 
 def _safe_float(value, default: float = 0.0) -> float:
@@ -26,18 +27,49 @@ def _safe_float(value, default: float = 0.0) -> float:
         return default
 
 
+def request_prop_risk_rebaseline(reason: str = "manual_reset") -> bool:
+    """
+    Ask prop-risk controls to reset baselines/cooldowns on the next risk check.
+    """
+    session = get_session()
+    try:
+        state = session.query(EngineState).filter(EngineState.key == _STATE_REBASELINE_REQUESTED).first()
+        payload = {
+            "value": True,
+            "reason": str(reason or "manual_reset"),
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+        if state:
+            state.value = payload
+        else:
+            session.add(EngineState(key=_STATE_REBASELINE_REQUESTED, value=payload))
+        session.commit()
+        logger.bind(event="PROP_RISK_REBASELINE_REQUESTED", reason=payload["reason"]).warning(
+            "PROP_RISK_REBASELINE_REQUESTED"
+        )
+        return True
+    except Exception as exc:
+        session.rollback()
+        logger.error("Failed to request prop-risk rebaseline: {}", exc)
+        return False
+    finally:
+        session.close()
+
+
 class PropRiskManager:
     """Pre-trade approvals + post-close risk-state updates."""
 
     def __init__(self, fetcher, executor) -> None:
         self.fetcher = fetcher
         self.executor = executor
+        self.symbol = str(os.getenv("SYMBOL", ACTIVE_SYMBOL)).strip() or ACTIVE_SYMBOL
         self.max_daily_loss_pct = _safe_float(
             os.getenv("MAX_DAILY_LOSS_PCT", str(settings.safety.max_daily_loss_pct)),
             settings.safety.max_daily_loss_pct,
         )
         self.trailing_dd_limit_pct = _safe_float(os.getenv("TRAILING_DD_LIMIT_PCT", "0.08"), 0.08)
-        self.max_exposure_pct = _safe_float(os.getenv("MAX_EXPOSURE_PCT", "0.30"), 0.30)
+        # Institutional paper mode: allow up to full account exposure by default.
+        self.max_exposure_pct = _safe_float(os.getenv("MAX_EXPOSURE_PCT", "1.0"), 1.0)
         self.loss_streak_limit = int(os.getenv("PROP_MAX_CONSECUTIVE_LOSSES", "3"))
         self.cooldown_hours = int(os.getenv("PROP_COOLDOWN_HOURS", "6"))
 
@@ -52,6 +84,20 @@ class PropRiskManager:
         today = now.date().isoformat()
 
         equity = self.estimate_equity()
+        rebaseline_requested = bool(self._get_engine_state(_STATE_REBASELINE_REQUESTED))
+        if rebaseline_requested:
+            self._set_engine_state(_STATE_DAY_START_EQUITY, {"date": today, "equity": float(equity)})
+            self._set_engine_state(_STATE_MAX_EQUITY, float(equity))
+            self._set_engine_state(_STATE_COOLDOWN_UNTIL, None)
+            self._set_engine_state(_STATE_SINGLE_SYMBOL_LOSS_STREAK, 0)
+            self._set_engine_state(_STATE_REBASELINE_REQUESTED, False)
+            logger.bind(
+                event="PROP_RISK_REBASELINED",
+                symbol=self.symbol,
+                equity=float(equity),
+                date=today,
+            ).warning("PROP_RISK_REBASELINED")
+
         daily_loss = self._compute_daily_loss()
         day_start_equity = self._get_day_start_equity(today, equity)
         daily_loss_pct = (daily_loss / day_start_equity) if day_start_equity > 0 else 0.0
@@ -164,29 +210,14 @@ class PropRiskManager:
         Estimate account equity as cash balance + marked value of open positions.
         """
         balance = _safe_float(self.executor.get_balance(), settings.trading.paper_starting_balance)
-        session = get_session()
-        try:
-            open_trades = (
-                session.query(Trade)
-                .filter(Trade.status == "open", Trade.pair == XRP_ONLY_SYMBOL)
-                .all()
-            )
-        finally:
-            session.close()
-
         marked_value = 0.0
-        for trade in open_trades:
+        for symbol, qty, fallback_entry in self._iter_open_positions():
             try:
-                ticker = self.fetcher.get_ticker(trade.pair)
-                price = _safe_float(ticker.get("price"), _safe_float(trade.entry_price))
+                ticker = self.fetcher.get_ticker(symbol)
+                price = _safe_float(ticker.get("price"), fallback_entry)
             except Exception:
-                price = _safe_float(trade.entry_price)
-            qty = _safe_float(trade.quantity)
-            side = str(getattr(trade, "side", "BUY")).upper()
-            if side == "SELL":
-                marked_value -= price * qty
-            else:
-                marked_value += price * qty
+                price = fallback_entry
+            marked_value += price * qty
         return max(0.0, balance + marked_value)
 
     def _compute_daily_loss(self) -> float:
@@ -198,7 +229,7 @@ class PropRiskManager:
                 session.query(func.sum(Trade.pnl))
                 .filter(
                     Trade.status == "closed",
-                    Trade.pair == XRP_ONLY_SYMBOL,
+                    Trade.pair == self.symbol,
                     Trade.exit_time >= today_start,
                 )
                 .scalar()
@@ -209,25 +240,55 @@ class PropRiskManager:
             session.close()
 
     def _compute_open_exposure(self) -> float:
+        exposure = 0.0
+        for symbol, qty, fallback_entry in self._iter_open_positions():
+            try:
+                ticker = self.fetcher.get_ticker(symbol)
+                mark = _safe_float(ticker.get("price"), fallback_entry)
+            except Exception:
+                mark = fallback_entry
+            exposure += abs(mark * qty)
+        return max(0.0, exposure)
+
+    def _iter_open_positions(self) -> list[tuple[str, float, float]]:
+        """
+        Return open positions as tuples of (symbol, signed_qty, fallback_entry_price).
+        PAPER mode uses the paper snapshot as source of truth to avoid stale Trade rows.
+        """
+        if str(settings.trading.trading_mode).upper() == "PAPER":
+            try:
+                from execution.paper_executor import load_paper_snapshot
+
+                snapshot = load_paper_snapshot()
+                rows: list[tuple[str, float, float]] = []
+                for symbol, payload in (snapshot.get("positions", {}) or {}).items():
+                    qty = _safe_float((payload or {}).get("quantity"), 0.0)
+                    if abs(qty) <= 1e-12:
+                        continue
+                    entry = _safe_float((payload or {}).get("avg_entry_price"), 0.0)
+                    rows.append((str(symbol or self.symbol), qty, entry))
+                return rows
+            except Exception as exc:
+                logger.debug("Falling back to Trade rows for prop-risk position view: {}", exc)
+
         session = get_session()
         try:
             open_trades = (
                 session.query(Trade)
-                .filter(Trade.status == "open", Trade.pair == XRP_ONLY_SYMBOL)
+                .filter(Trade.status == "open", Trade.pair == self.symbol)
                 .all()
             )
+            rows = []
+            for trade in open_trades:
+                qty = _safe_float(trade.quantity, 0.0)
+                side = str(getattr(trade, "side", "BUY")).upper()
+                signed_qty = qty if side != "SELL" else -qty
+                if abs(signed_qty) <= 1e-12:
+                    continue
+                rows.append((str(trade.pair or self.symbol), signed_qty, _safe_float(trade.entry_price, 0.0)))
+            return rows
         finally:
             session.close()
-
-        exposure = 0.0
-        for trade in open_trades:
-            try:
-                ticker = self.fetcher.get_ticker(trade.pair)
-                mark = _safe_float(ticker.get("price"), _safe_float(trade.entry_price))
-            except Exception:
-                mark = _safe_float(trade.entry_price)
-            exposure += abs(mark * _safe_float(trade.quantity))
-        return max(0.0, exposure)
 
     def _compute_single_symbol_loss_streak(self) -> int:
         persisted = self._get_engine_state(_STATE_SINGLE_SYMBOL_LOSS_STREAK)
@@ -257,7 +318,7 @@ class PropRiskManager:
                 session.query(Trade)
                 .filter(
                     Trade.status == "closed",
-                    Trade.pair == XRP_ONLY_SYMBOL,
+                    Trade.pair == self.symbol,
                     Trade.pnl.isnot(None),
                 )
                 .order_by(Trade.exit_time.desc(), Trade.id.desc())

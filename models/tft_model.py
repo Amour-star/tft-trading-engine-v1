@@ -784,7 +784,8 @@ class TFTPredictor:
                 "enable_progress_bar": False,
                 "enable_model_summary": False,
             }
-            with _quiet_lightning_info_logs():
+            import torch
+            with torch.inference_mode(), _quiet_lightning_info_logs():
                 raw_preds = self.model.predict(
                     dataloader,
                     mode="quantiles",
@@ -883,6 +884,13 @@ class TFTPredictor:
 
             if mean_abs_forecast < 1e-6:
                 confidence = min(confidence, 0.35)
+
+            # Clear CUDA cache after prediction to free GPU memory
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
 
             return {
                 "prob_up": round(prob_up, 4),

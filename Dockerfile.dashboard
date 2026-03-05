@@ -3,12 +3,16 @@
 FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    TZ=Europe/Berlin
 
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates \
+      tzdata \
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+    && echo $TZ > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.dashboard.txt /app/requirements.dashboard.txt

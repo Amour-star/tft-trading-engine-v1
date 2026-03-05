@@ -114,10 +114,13 @@ class TestSafety:
     def test_kill_switch(self):
         from engine.safety import SafetyManager
         sm = SafetyManager()
-        sm._killed = True
-        can, reason = sm.can_trade()
-        assert not can
-        assert "kill" in reason.lower()
+        sm._save_state("killed", True)
+        try:
+            can, reason = sm.can_trade()
+            assert not can
+            assert "kill" in reason.lower()
+        finally:
+            sm._save_state("killed", False)
 
 
 class TestExecution:

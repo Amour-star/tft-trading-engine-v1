@@ -147,11 +147,15 @@ class RegimeEngine:
 
     @staticmethod
     def position_size_multiplier(regime: Dict[str, Any]) -> float:
+        """Regime modifies size multiplier but never reduces below 0.7 (aggressive mode)."""
         size_multiplier = 1.0
         if regime.get("trend") == "bull":
-            size_multiplier += 0.2
+            size_multiplier += 0.3
+        elif regime.get("trend") == "bear":
+            size_multiplier -= 0.2
+        # Neutral trend keeps 1.0 (no penalty)
         if regime.get("volatility") == "high":
-            size_multiplier -= 0.3
+            size_multiplier -= 0.1
         if regime.get("momentum") == "strong":
             size_multiplier += 0.2
-        return max(0.25, min(2.0, float(size_multiplier)))
+        return max(0.7, min(2.0, float(size_multiplier)))

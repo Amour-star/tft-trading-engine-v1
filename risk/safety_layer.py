@@ -38,8 +38,9 @@ class SafetyLimits:
 
 def load_limits() -> SafetyLimits:
     return SafetyLimits(
-        max_position_pct=max(0.0, _env_float("MAX_POSITION_PCT", 0.05)),
-        max_notional_per_trade=max(0.0, _env_float("MAX_NOTIONAL_PER_TRADE", 10_000.0)),
+        # Default to full-balance sizing for paper execution unless explicitly overridden.
+        max_position_pct=max(0.0, _env_float("MAX_POSITION_PCT", 1.0)),
+        max_notional_per_trade=max(0.0, _env_float("MAX_NOTIONAL_PER_TRADE", 1_000_000_000.0)),
         kill_switch_daily_drawdown=max(0.0, _env_float("KILL_SWITCH_DAILY_DRAWDOWN", 0.15)),
         kill_switch_balance_drop=max(0.0, _env_float("KILL_SWITCH_BALANCE_DROP", 0.30)),
     )
@@ -151,7 +152,8 @@ def abnormal_trade_detector(
         return True
 
     notional = price_value * qty_value
-    if balance_value > 0 and notional > balance_value * 0.95:
+    near_full_pct = max(0.50, min(1.50, _env_float("ABNORMAL_NOTIONAL_PCT", 0.999)))
+    if balance_value > 0 and notional > balance_value * near_full_pct:
         logger.bind(
             event="TRADE_BLOCKED",
             pair=pair,
@@ -159,6 +161,7 @@ def abnormal_trade_detector(
             qty=qty_value,
             balance=balance_value,
             notional=notional,
+            near_full_pct=near_full_pct,
             reason="near_total_balance",
         ).warning("TRADE_BLOCKED")
         return True
@@ -245,26 +248,59 @@ def evaluate_and_arm_kill_switch(
 
     session = get_session()
     try:
-        # Day-start baseline (UTC).
+        rebaseline_requested = False
+        rebaseline_reason = ""
         day_start = 0.0
-        day_state = _get_state_value(session, "kill_switch_day_start_equity")
-        if isinstance(day_state, dict) and str(day_state.get("date")) == today:
-            day_start = float(day_state.get("equity") or 0.0)
-        else:
+        initial_equity = 0.0
+
+        rebaseline_state = _get_state_value(session, "kill_switch_rebaseline")
+        if isinstance(rebaseline_state, dict) and bool(rebaseline_state.get("value")):
+            rebaseline_requested = True
+            rebaseline_reason = str(rebaseline_state.get("reason") or "manual_reset")
             day_start = equity_value
+            initial_equity = equity_value
             _upsert_state_value(
                 session,
                 "kill_switch_day_start_equity",
                 {"date": today, "equity": equity_value},
             )
-
-        # Initial baseline (first-seen equity).
-        initial_state = _get_state_value(session, "kill_switch_initial_equity")
-        if isinstance(initial_state, dict) and initial_state.get("equity") is not None:
-            initial_equity = float(initial_state.get("equity") or 0.0)
-        else:
-            initial_equity = equity_value
             _upsert_state_value(session, "kill_switch_initial_equity", {"equity": equity_value})
+            _upsert_state_value(
+                session,
+                "kill_switch_rebaseline",
+                {
+                    "value": False,
+                    "reason": rebaseline_reason,
+                    "applied_at": now_dt.isoformat(),
+                    "equity": equity_value,
+                },
+            )
+            logger.bind(
+                event="KILL_SWITCH_REBASELINED",
+                reason=rebaseline_reason,
+                equity=equity_value,
+                date=today,
+            ).warning("KILL_SWITCH_REBASELINED")
+        else:
+            # Day-start baseline (UTC).
+            day_state = _get_state_value(session, "kill_switch_day_start_equity")
+            if isinstance(day_state, dict) and str(day_state.get("date")) == today:
+                day_start = float(day_state.get("equity") or 0.0)
+            else:
+                day_start = equity_value
+                _upsert_state_value(
+                    session,
+                    "kill_switch_day_start_equity",
+                    {"date": today, "equity": equity_value},
+                )
+
+            # Initial baseline (first-seen equity).
+            initial_state = _get_state_value(session, "kill_switch_initial_equity")
+            if isinstance(initial_state, dict) and initial_state.get("equity") is not None:
+                initial_equity = float(initial_state.get("equity") or 0.0)
+            else:
+                initial_equity = equity_value
+                _upsert_state_value(session, "kill_switch_initial_equity", {"equity": equity_value})
 
         triggered = False
         reason = ""
@@ -275,6 +311,8 @@ def evaluate_and_arm_kill_switch(
             "day_start_equity": day_start,
             "initial_equity": initial_equity,
             "daily_drawdown": ((day_start - equity_value) / day_start) if day_start > 0 else 0.0,
+            "rebaseline_applied": rebaseline_requested,
+            "rebaseline_reason": rebaseline_reason if rebaseline_requested else None,
             "limits": {
                 "kill_switch_daily_drawdown": limits.kill_switch_daily_drawdown,
                 "kill_switch_balance_drop": limits.kill_switch_balance_drop,
@@ -308,6 +346,34 @@ def evaluate_and_arm_kill_switch(
         session.rollback()
         logger.exception("Kill-switch evaluation failed")
         return False, "", {"equity": equity_value}
+    finally:
+        session.close()
+
+
+def request_kill_switch_rebaseline(reason: str = "manual_reset") -> bool:
+    """
+    Ask the safety layer to re-baseline kill-switch equity references on next cycle.
+    """
+    session = get_session()
+    now_dt = datetime.now(timezone.utc)
+    reason_text = str(reason or "manual_reset")
+    try:
+        _upsert_state_value(
+            session,
+            "kill_switch_rebaseline",
+            {"value": True, "reason": reason_text, "timestamp": now_dt.isoformat()},
+        )
+        session.commit()
+        logger.bind(
+            event="KILL_SWITCH_REBASELINE_REQUESTED",
+            reason=reason_text,
+            timestamp=now_dt.isoformat(),
+        ).warning("KILL_SWITCH_REBASELINE_REQUESTED")
+        return True
+    except Exception:
+        session.rollback()
+        logger.exception("Failed to request kill-switch rebaseline")
+        return False
     finally:
         session.close()
 

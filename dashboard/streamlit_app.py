@@ -3,6 +3,7 @@ Streamlit admin dashboard for the TFT Trading Engine.
 """
 from __future__ import annotations
 
+import math
 import os
 import sqlite3
 from pathlib import Path
@@ -12,23 +13,96 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from config.settings import settings
 
-PAIRS = ["BTC-USDT", "ETH-USDT", "XRP-USDT", "DOGE-USDT"]
+DEFAULT_PAIRS = [
+    "BTC-USDT",
+    "ETH-USDT",
+    "SOL-USDT",
+    "BNB-USDT",
+    "DOGE-USDT",
+    "XRP-USDT",
+    "AVAX-USDT",
+]
 API_BASE_DEFAULT = os.getenv("API_BASE", "http://localhost:8000/api")
+UI_TIMEZONE = (os.getenv("UI_TIMEZONE", os.getenv("TZ", "Europe/Berlin")) or "Europe/Berlin").strip()
+UI_ZONE = ZoneInfo(UI_TIMEZONE)
 API_BASE_BY_SYMBOL = {
     "BTC-USDT": os.getenv("API_BASE_BTC", API_BASE_DEFAULT),
     "ETH-USDT": os.getenv("API_BASE_ETH", API_BASE_DEFAULT),
+    "SOL-USDT": os.getenv("API_BASE_SOL", API_BASE_DEFAULT),
+    "BNB-USDT": os.getenv("API_BASE_BNB", API_BASE_DEFAULT),
     "XRP-USDT": os.getenv("API_BASE_XRP", API_BASE_DEFAULT),
     "DOGE-USDT": os.getenv("API_BASE_DOGE", API_BASE_DEFAULT),
+    "AVAX-USDT": os.getenv("API_BASE_AVAX", API_BASE_DEFAULT),
 }
 
 st.set_page_config(page_title="TFT Trading Engine", page_icon=":chart_with_upwards_trend:", layout="wide")
 
 
+def _normalize_symbol(token: str) -> str:
+    symbol = str(token or "").strip().upper().replace("/", "-")
+    if symbol and "-" not in symbol:
+        symbol = f"{symbol}-USDT"
+    return symbol
+
+
+def _iter_api_bases() -> list[str]:
+    ordered: list[str] = []
+    seen = set()
+    for base in [API_BASE_DEFAULT, *API_BASE_BY_SYMBOL.values()]:
+        value = str(base or "").strip().rstrip("/")
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
+def discover_pairs() -> list[str]:
+    env_universe = os.getenv("UNIVERSE", "").strip()
+    pairs = list(DEFAULT_PAIRS)
+    if env_universe:
+        pairs = []
+        for item in env_universe.split(","):
+            sym = _normalize_symbol(item)
+            if not sym:
+                continue
+            pairs.append(sym)
+
+    discovered: list[str] = []
+    for base in _iter_api_bases():
+        try:
+            resp = requests.get(f"{base}/universe", timeout=2)
+            if not resp.ok:
+                continue
+            payload = resp.json() or {}
+            for sym in payload.get("symbols", []) or []:
+                normalized = _normalize_symbol(sym)
+                if normalized:
+                    discovered.append(normalized)
+        except Exception:
+            continue
+
+    if discovered:
+        pairs = discovered
+
+    deduped = []
+    seen = set()
+    for sym in pairs:
+        if sym in seen:
+            continue
+        seen.add(sym)
+        deduped.append(sym)
+    return deduped or list(DEFAULT_PAIRS)
+
+
+PAIRS = discover_pairs()
+
 if "symbol" not in st.session_state:
-    st.session_state.symbol = "XRP-USDT"
+    st.session_state.symbol = PAIRS[0]
 
 selected_pair = st.sidebar.selectbox(
     "Select Trading Pair",
@@ -45,6 +119,18 @@ symbol = st.session_state.symbol
 
 def get_api_base(selected_symbol: str) -> str:
     return API_BASE_BY_SYMBOL.get(selected_symbol, API_BASE_DEFAULT)
+
+
+def get_unique_api_targets(symbols: list[str]) -> list[tuple[str, str]]:
+    targets: list[tuple[str, str]] = []
+    seen = set()
+    for sym in symbols:
+        base = get_api_base(sym).rstrip("/")
+        if base in seen:
+            continue
+        seen.add(base)
+        targets.append((sym, base))
+    return targets
 
 
 def get_db_path(selected_symbol: str) -> str:
@@ -65,11 +151,40 @@ def get_db_path(selected_symbol: str) -> str:
 
 def safe_float(value, default=0.0):
     try:
-        if value is None:
-            return default
-        return float(value)
+        numeric = float(value)
     except Exception:
-        return default
+        return float(default)
+    if not math.isfinite(numeric):
+        return float(default)
+    return numeric
+
+
+def to_ui_datetime(series: pd.Series) -> pd.Series:
+    ts = pd.to_datetime(series, errors="coerce", utc=True)
+    try:
+        return ts.dt.tz_convert(UI_ZONE)
+    except Exception:
+        return ts
+
+
+def minute_bucket(df: pd.DataFrame, time_col: str, value_cols: list[str], agg: str = "last") -> pd.DataFrame:
+    if df.empty or time_col not in df.columns:
+        return df
+    work = df.copy()
+    work[time_col] = to_ui_datetime(work[time_col])
+    work = work[work[time_col].notna()]
+    if work.empty:
+        return work
+    for col in value_cols:
+        if col in work.columns:
+            work[col] = pd.to_numeric(work[col], errors="coerce")
+    work[time_col] = work[time_col].dt.floor("min")
+    grouped = work.groupby(time_col, as_index=False)
+    if agg == "sum":
+        out = grouped[value_cols].sum(numeric_only=True)
+    else:
+        out = grouped[value_cols].last()
+    return out.sort_values(time_col)
 
 
 def compute_max_drawdown(equity_series: pd.Series) -> float:
@@ -94,6 +209,14 @@ def _safe_read_sql(selected_symbol: str, query: str, params: tuple | None = None
 
 
 def load_trades(selected_symbol: str, limit: int = 50) -> pd.DataFrame:
+    payload = api_get("trades", {"limit": int(limit)}, selected_symbol=selected_symbol)
+    if isinstance(payload, list) and payload:
+        df = pd.DataFrame(payload)
+        if "pair" in df.columns:
+            df = df[df["pair"] == selected_symbol]
+        elif "symbol" in df.columns:
+            df = df[df["symbol"] == selected_symbol]
+        return df
     return _safe_read_sql(
         selected_symbol,
         "SELECT * FROM trades ORDER BY exit_time DESC LIMIT ?",
@@ -102,6 +225,18 @@ def load_trades(selected_symbol: str, limit: int = 50) -> pd.DataFrame:
 
 
 def load_pnl(selected_symbol: str) -> pd.DataFrame:
+    payload = api_get("trades", {"limit": 600}, selected_symbol=selected_symbol)
+    if isinstance(payload, list) and payload:
+        df = pd.DataFrame(payload)
+        pair_col = "pair" if "pair" in df.columns else ("symbol" if "symbol" in df.columns else None)
+        if pair_col:
+            df = df[df[pair_col] == selected_symbol]
+        if "exit_time" in df.columns and "pnl" in df.columns:
+            out = df[["exit_time", "pnl"]].copy()
+            out.rename(columns={"exit_time": "time"}, inplace=True)
+            out = out[out["time"].notna()]
+            out.sort_values("time", inplace=True)
+            return out
     return _safe_read_sql(
         selected_symbol,
         "SELECT exit_time AS time, pnl FROM trades WHERE exit_time IS NOT NULL ORDER BY exit_time ASC",
@@ -109,6 +244,9 @@ def load_pnl(selected_symbol: str) -> pd.DataFrame:
 
 
 def load_metrics(selected_symbol: str, limit: int = 300) -> pd.DataFrame:
+    payload = api_get("risk-metrics", {"limit": int(limit)}, selected_symbol=selected_symbol)
+    if isinstance(payload, list) and payload:
+        return pd.DataFrame(payload)
     return _safe_read_sql(
         selected_symbol,
         "SELECT * FROM risk_metrics ORDER BY timestamp DESC LIMIT ?",
@@ -117,6 +255,13 @@ def load_metrics(selected_symbol: str, limit: int = 300) -> pd.DataFrame:
 
 
 def load_ai_metrics(selected_symbol: str, limit: int = 180) -> pd.DataFrame:
+    payload = api_get("ai/history", {"limit": int(limit)}, selected_symbol=selected_symbol)
+    if isinstance(payload, list) and payload:
+        df = pd.DataFrame(payload)
+        pair_col = "pair" if "pair" in df.columns else ("symbol" if "symbol" in df.columns else None)
+        if pair_col:
+            df = df[df[pair_col] == selected_symbol]
+        return df
     return _safe_read_sql(
         selected_symbol,
         "SELECT * FROM ai_score_history ORDER BY timestamp DESC LIMIT ?",
@@ -125,10 +270,14 @@ def load_ai_metrics(selected_symbol: str, limit: int = 180) -> pd.DataFrame:
 
 
 def load_open_positions(selected_symbol: str) -> pd.DataFrame:
-    return _safe_read_sql(
-        selected_symbol,
-        "SELECT * FROM trades WHERE status IN ('OPEN', 'open') ORDER BY entry_time DESC",
-    )
+    payload = api_get("positions", selected_symbol=selected_symbol)
+    if isinstance(payload, list) and payload:
+        df = pd.DataFrame(payload)
+        pair_col = "symbol" if "symbol" in df.columns else ("pair" if "pair" in df.columns else None)
+        if pair_col:
+            df = df[df[pair_col] == selected_symbol]
+        return df
+    return pd.DataFrame()
 
 
 def load_symbol_snapshot(selected_symbol: str) -> dict:
@@ -150,6 +299,7 @@ def load_symbol_snapshot(selected_symbol: str) -> dict:
         for position in open_positions
     )
     regime = status_payload.get("latest_regime") or {}
+    data_source = str(status_payload.get("market_data_source") or "unknown")
     regime_label = (
         f"{regime.get('trend', 'n/a')} / {regime.get('volatility', 'n/a')}"
         if regime
@@ -166,6 +316,7 @@ def load_symbol_snapshot(selected_symbol: str) -> dict:
         "AIScore": safe_float(ai_payload.get("ai_score")),
         "AIConfidence": safe_float(ai_payload.get("confidence")),
         "Regime": regime_label,
+        "DataSource": data_source,
         "ExposureValue": exposure_value,
     }
 
@@ -183,6 +334,7 @@ def build_portfolio_df(symbols: list[str]) -> pd.DataFrame:
                 "WinRate",
                 "OpenTrades",
                 "Regime",
+                "DataSource",
                 "AIScore",
                 "AIConfidence",
                 "ExposureValue",
@@ -212,8 +364,9 @@ def render_portfolio_overview(symbols: list[str]) -> None:
         if df_pnl.empty:
             continue
         df_local = df_pnl.copy()
-        df_local["time"] = pd.to_datetime(df_local["time"], errors="coerce")
+        df_local["time"] = to_ui_datetime(df_local["time"])
         df_local["pnl"] = pd.to_numeric(df_local["pnl"], errors="coerce").fillna(0.0)
+        df_local = minute_bucket(df_local[["time", "pnl"]], "time", ["pnl"], agg="sum")
         pnl_history_frames.append(df_local[["time", "pnl"]])
     if pnl_history_frames:
         merged = pd.concat(pnl_history_frames, ignore_index=True).sort_values("time")
@@ -247,7 +400,7 @@ def render_portfolio_overview(symbols: list[str]) -> None:
     st.plotly_chart(pie_fig, use_container_width=True)
 
     perf_df = portfolio_df[
-        ["Symbol", "Balance", "Realized", "Unrealized", "WinRate", "OpenTrades", "Regime", "AIScore"]
+        ["Symbol", "Balance", "Realized", "Unrealized", "WinRate", "OpenTrades", "Regime", "DataSource", "AIScore"]
     ].copy()
     styled = perf_df.style.format(
         {
@@ -354,7 +507,7 @@ with st.sidebar:
         st.success("Updated")
 
     st.divider()
-    auto_refresh_enabled = st.toggle("Auto-refresh (10s)", value=True)
+    auto_refresh_enabled = st.toggle("Auto-refresh (5s)", value=True)
 
     st.divider()
     st.subheader("Reset Paper Account")
@@ -427,17 +580,32 @@ with st.sidebar:
                 st.error("ADMIN_TOKEN is not configured in the environment.")
             else:
                 with st.spinner("Requesting full engine hard reset..."):
-                    response = api_post(
-                        "admin/hard-reset",
-                        headers={"ADMIN_TOKEN": admin_token},
-                    )
-                if response and response.get("status") == "success":
-                    success_msg = "Engine hard reset completed"
+                    responses = []
+                    for sym, _base in get_unique_api_targets(PAIRS):
+                        result = api_post(
+                            "admin/hard-reset",
+                            headers={"ADMIN_TOKEN": admin_token},
+                            selected_symbol=sym,
+                        )
+                        responses.append((sym, result))
+
+                successful = []
+                failed = []
+                for sym, payload in responses:
+                    status_value = str((payload or {}).get("status", "")).strip().lower()
+                    if status_value in {"success", "reset_started", "reset started"}:
+                        successful.append(sym)
+                    else:
+                        failed.append((sym, payload))
+
+                if successful and not failed:
+                    success_msg = f"Hard reset queued for {len(successful)} symbol API(s)"
                     st.session_state.clear()
                     st.session_state["hard_reset_feedback"] = success_msg
-                    st.experimental_rerun()
-                elif response:
-                    st.error(response.get("detail", "Hard reset failed"))
+                    st.rerun()
+                elif failed:
+                    details = ", ".join(f"{sym}: {(payload or {}).get('detail', 'failed')}" for sym, payload in failed)
+                    st.error(f"Hard reset failed for one or more APIs ({details})")
                 else:
                     st.error("Hard reset failed: no response from API.")
     st.caption("This action cannot be undone.")
@@ -448,6 +616,9 @@ def render_asset_dashboard(symbol: str, status: dict | None, auto_refresh_enable
     st.title(f"TFT AI Trading Engine - {symbol}")
     
     stats = api_get("stats") or {}
+    performance = api_get("performance") or {}
+    metrics_payload = api_get("metrics") or {}
+    equity_payload = api_get("equity", {"limit": 300}) or []
     threshold_info = api_get("thresholds") or {}
     ai_score = api_get("ai/current-score") or {}
     df_ai_history = load_ai_metrics(symbol, limit=180)
@@ -464,6 +635,14 @@ def render_asset_dashboard(symbol: str, status: dict | None, auto_refresh_enable
     c5.metric("W/L", f"{stats.get('winning_trades', 0)}/{stats.get('losing_trades', 0)}")
     c6.metric("Long/Short", f"{stats.get('long_trades', 0)}/{stats.get('short_trades', 0)}")
 
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1.metric("Equity", f"${safe_float(performance.get('equity')):,.2f}")
+    m2.metric("Balance", f"${safe_float(performance.get('balance')):,.2f}")
+    m3.metric("Sharpe", f"{safe_float(metrics_payload.get('sharpe_ratio')):.2f}")
+    m4.metric("Sortino", f"{safe_float(metrics_payload.get('sortino_ratio')):.2f}")
+    m5.metric("Drawdown", f"{safe_float(metrics_payload.get('max_drawdown')):.2%}")
+    m6.metric("Exposure", f"{safe_float(metrics_payload.get('exposure_pct')):.2f}%")
+
     a1, a2, a3 = st.columns(3)
     a1.metric("AI Score", f"{safe_float(ai_score.get('ai_score')):.2%}")
     a2.metric("AI Confidence", f"{safe_float(ai_score.get('confidence')):.2%}")
@@ -471,6 +650,17 @@ def render_asset_dashboard(symbol: str, status: dict | None, auto_refresh_enable
     
     r1, r2, r3, r4 = st.columns(4)
     status_payload = status or {}
+    source_label = str(status_payload.get("market_data_source") or "unknown")
+    ticker_source = str(status_payload.get("ticker_source") or "unknown")
+    orderbook_source = str(status_payload.get("orderbook_source") or "unknown")
+    if bool(status_payload.get("synthetic_active")):
+        st.error(
+            f"Synthetic market data active for {symbol}. "
+            "Disable trading or restore exchange connectivity before trusting PnL/metrics."
+        )
+    elif source_label == "public_ticker":
+        st.warning(f"{symbol} is using public ticker fallback (no real L2 orderbook).")
+    st.caption(f"Data source: {source_label} | ticker={ticker_source} | orderbook={orderbook_source}")
     r1.metric("Aggression", f"{safe_float(status_payload.get('aggression_level', threshold_info.get('aggression_level', 1.0)), 1.0):.2f}")
     r2.metric("Shorts", "ON" if bool(status_payload.get("allow_shorts", threshold_info.get("allow_shorts", False))) else "OFF")
     r3.metric("Scaled Threshold", f"{safe_float(status_payload.get('threshold_after_scaling')):.3f}")
@@ -504,6 +694,14 @@ def render_asset_dashboard(symbol: str, status: dict | None, auto_refresh_enable
     if ai_history:
         df_ai = pd.DataFrame(ai_history)
         if not df_ai.empty:
+            if "timestamp" in df_ai.columns:
+                df_ai["timestamp"] = to_ui_datetime(df_ai["timestamp"])
+            for col in ("ai_score", "confidence", "prob_up", "prob_down"):
+                if col in df_ai.columns:
+                    df_ai[col] = pd.to_numeric(df_ai[col], errors="coerce")
+            bucket_cols = [c for c in ("ai_score", "confidence", "prob_up", "prob_down") if c in df_ai.columns]
+            if "timestamp" in df_ai.columns and bucket_cols:
+                df_ai = minute_bucket(df_ai, "timestamp", bucket_cols, agg="last")
             fig_ai = go.Figure()
             fig_ai.add_trace(
                 go.Scatter(
@@ -539,19 +737,52 @@ def render_asset_dashboard(symbol: str, status: dict | None, auto_refresh_enable
         p1.metric("Paper Balance", f"${virtual_balance:.2f}")
         p2.metric("Realized PnL", f"${realized:.2f}")
         p3.metric("Unrealized PnL", f"${unrealized:.2f}")
+
+    if equity_payload:
+        df_eq = pd.DataFrame(equity_payload)
+        if not df_eq.empty and "timestamp" in df_eq.columns and "equity" in df_eq.columns:
+            df_eq["timestamp"] = to_ui_datetime(df_eq["timestamp"])
+            df_eq["equity"] = pd.to_numeric(df_eq["equity"], errors="coerce").fillna(0.0)
+            df_eq["balance"] = pd.to_numeric(df_eq.get("balance"), errors="coerce").fillna(0.0)
+            df_eq = minute_bucket(df_eq, "timestamp", ["equity", "balance"], agg="last")
+            eq_fig = go.Figure()
+            eq_fig.add_trace(
+                go.Scatter(
+                    x=df_eq["timestamp"],
+                    y=df_eq["equity"],
+                    mode="lines",
+                    name="Equity",
+                    line=dict(color="#00d1b2", width=2),
+                )
+            )
+            eq_fig.add_trace(
+                go.Scatter(
+                    x=df_eq["timestamp"],
+                    y=df_eq["balance"],
+                    mode="lines",
+                    name="Balance",
+                    line=dict(color="#ffd166", width=1.5),
+                )
+            )
+            eq_fig.update_layout(
+                title="Live Equity Curve",
+                template="plotly_dark",
+                height=280,
+            )
+            st.plotly_chart(eq_fig, use_container_width=True)
     
     
     TAB_NAMES = [
-        "?? PnL Curve",
-        "?? Trades",
-        "?? Predictions",
-        "?? Learning",
-        "?? Open Trade",
-        "?? AI Analytics",
-        "?? Agent Attribution",
-        "??? Risk Metrics",
-        "?? Strategy Evolution",
-        "?? Decision Log",
+        "PnL Curve",
+        "Trades",
+        "Predictions",
+        "Learning",
+        "Open Trade",
+        "AI Analytics",
+        "Agent Attribution",
+        "Risk Metrics",
+        "Strategy Evolution",
+        "Decision Log",
     ]
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs(TAB_NAMES)
     
@@ -562,6 +793,11 @@ def render_asset_dashboard(symbol: str, status: dict | None, auto_refresh_enable
             if curve:
                 df = pd.DataFrame(curve)
         if not df.empty:
+            df["time"] = to_ui_datetime(df["time"])
+            df["pnl"] = pd.to_numeric(df["pnl"], errors="coerce").fillna(0.0)
+            df = minute_bucket(df[["time", "pnl"]], "time", ["pnl"], agg="sum")
+            if not df.empty:
+                df["pnl"] = df["pnl"].cumsum()
             fig = go.Figure()
             fig.add_trace(
                 go.Scatter(
@@ -581,7 +817,7 @@ def render_asset_dashboard(symbol: str, status: dict | None, auto_refresh_enable
             )
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.warning("Engine not producing trades — check monitor")
+            st.warning("Engine not producing trades - check monitor")
     
     with tab2:
         df = load_trades(symbol, limit=50)
@@ -589,6 +825,10 @@ def render_asset_dashboard(symbol: str, status: dict | None, auto_refresh_enable
             trades = api_get("trades", {"limit": 50}) or []
             df = pd.DataFrame(trades)
         if not df.empty:
+            for ts_col in ("entry_time", "exit_time"):
+                if ts_col in df.columns:
+                    ts_series = to_ui_datetime(df[ts_col])
+                    df[ts_col] = ts_series.dt.strftime("%Y-%m-%d %H:%M:%S").fillna("")
             display_cols = [
                 c for c in [
                     "trade_id",
@@ -618,7 +858,7 @@ def render_asset_dashboard(symbol: str, status: dict | None, auto_refresh_enable
                     with st.expander(f"AI Reasoning: {trade_id}"):
                         st.text(row["ai_reasoning"])
         else:
-            st.warning("Engine not producing trades — check monitor")
+            st.warning("Engine not producing trades - check monitor")
     
     with tab3:
         preds = api_get("predictions", {"limit": 10})
@@ -717,6 +957,8 @@ def render_asset_dashboard(symbol: str, status: dict | None, auto_refresh_enable
             st.info("No closed trades with AI score data in selected period.")
         else:
             df = pd.DataFrame(timeline)
+            if "timestamp" in df.columns:
+                df["timestamp"] = to_ui_datetime(df["timestamp"])
             show_influence = score_mode == "Show governance influence"
     
             ai_fig = go.Figure()
@@ -870,6 +1112,8 @@ def render_asset_dashboard(symbol: str, status: dict | None, auto_refresh_enable
         else:
             df = pd.DataFrame(risk_metrics)
             if not df.empty:
+                if "timestamp" in df.columns:
+                    df["timestamp"] = to_ui_datetime(df["timestamp"])
                 sharpe_fig = go.Figure()
                 sharpe_fig.add_trace(
                     go.Scatter(
@@ -927,6 +1171,8 @@ def render_asset_dashboard(symbol: str, status: dict | None, auto_refresh_enable
             st.info("No strategy evolution snapshots yet.")
         else:
             df = pd.DataFrame(strategy_evolution)
+            if "timestamp" in df.columns:
+                df["timestamp"] = to_ui_datetime(df["timestamp"])
             st.dataframe(df.tail(50), use_container_width=True)
     
             weights_fig = go.Figure()
@@ -989,6 +1235,9 @@ def render_asset_dashboard(symbol: str, status: dict | None, auto_refresh_enable
             st.info("No decision events recorded yet. Events appear after the engine runs at least one cycle.")
         else:
             df_de = pd.DataFrame(decision_events)
+            if "timestamp" in df_de.columns:
+                ts = to_ui_datetime(df_de["timestamp"])
+                df_de["timestamp"] = ts.dt.strftime("%Y-%m-%d %H:%M:%S").fillna("")
             # Summary metrics
             total_events = len(df_de)
             no_trade_count = len(df_de[df_de["status"] == "no_trade"])
@@ -1029,11 +1278,11 @@ def render_asset_dashboard(symbol: str, status: dict | None, auto_refresh_enable
             st.json(model["active_model"])
     
     st.markdown("---")
-    st.caption(f"Last updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    st.caption(f"Last updated: {datetime.now(UI_ZONE).strftime('%Y-%m-%d %H:%M:%S')} {UI_TIMEZONE}")
     if auto_refresh_enabled:
         import time
     
-        time.sleep(10)
+        time.sleep(5)
         st.rerun()
     
 

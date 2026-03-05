@@ -13,6 +13,7 @@ from data.database import Trade, get_session
 from data.fetcher import KuCoinDataFetcher
 from data.features import compute_features
 from execution.base_executor import BaseExecutor
+from execution.event_bus import publish_event
 from models.tft_model import TFTPredictor
 from utils.logging import log_trade
 from utils.pnl import calculate_realized_pnl
@@ -357,6 +358,18 @@ class PositionMonitor:
             f"Trade closed: {trade_id} | {pair} | "
             f"Exit: {exit_price:.6f} | Reason: {reason} | "
             f"PnL: {trade.pnl:.4f} ({trade.pnl_pct:.4%}) | R: {trade.r_multiple:.2f}"
+        )
+        publish_event(
+            "TRADE_CLOSED",
+            {
+                "trade_id": trade_id,
+                "symbol": pair,
+                "side": side,
+                "exit_reason": reason,
+                "exit_price": float(exit_price),
+                "pnl": float(trade.pnl or 0.0),
+                "pnl_pct": float(trade.pnl_pct or 0.0),
+            },
         )
 
         self._trailing_extreme.pop(trade_id, None)

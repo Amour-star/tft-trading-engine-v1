@@ -18,14 +18,20 @@ from data.database import (
     AgentPerformance,
     AIDecisionAudit,
     DailyStats,
+    DecisionEvent,
     EngineState,
+    EquityHistory,
     GovernanceLog,
     LearningMetric,
     LLMUsage,
+    MetricSnapshot,
     PerformanceMetric,
     Position,
+    PositionEvent,
     Prediction,
     RiskState,
+    SignalRecord,
+    Statistics,
     StrategyParameter,
     Trade,
 )
@@ -36,6 +42,8 @@ TABLES_TO_CLEAR: tuple[tuple[str, type[Any]], ...] = (
     ("trades", Trade),
     ("positions", Position),
     ("predictions", Prediction),
+    ("signals", SignalRecord),
+    ("decision_events", DecisionEvent),
     ("learning_metrics", LearningMetric),
     ("agent_performance", AgentPerformance),
     ("daily_stats", DailyStats),
@@ -45,6 +53,10 @@ TABLES_TO_CLEAR: tuple[tuple[str, type[Any]], ...] = (
     ("governance_logs", GovernanceLog),
     ("ai_decision_audit", AIDecisionAudit),
     ("llm_usage", LLMUsage),
+    ("equity_history", EquityHistory),
+    ("metrics", MetricSnapshot),
+    ("position_events", PositionEvent),
+    ("statistics", Statistics),
 )
 
 
@@ -99,10 +111,11 @@ def _close_open_trades(session, summary: ResetSummary, confirm: bool) -> None:
     )
 
 
-def _collect_table_counts(session, inspector, summary: ResetSummary) -> None:
+def _collect_table_counts(session, available_tables: set[str], summary: ResetSummary) -> None:
     """Gather row counts for each table we intend to clear."""
     for label, model in TABLES_TO_CLEAR:
-        if not inspector.has_table(model.__tablename__):
+        table_name = model.__tablename__
+        if table_name not in available_tables:
             logger.warning("Skipping missing table '{}' during reset", model.__tablename__)
             summary.deleted[label] = 0
             continue
@@ -110,12 +123,13 @@ def _collect_table_counts(session, inspector, summary: ResetSummary) -> None:
         summary.deleted[label] = int(count)
 
 
-def _delete_tables(session, inspector, summary: ResetSummary) -> None:
+def _delete_tables(session, available_tables: set[str], summary: ResetSummary) -> None:
     """Delete all rows from the target tables."""
     for label, model in TABLES_TO_CLEAR:
-        if not inspector.has_table(model.__tablename__):
+        table_name = model.__tablename__
+        if table_name not in available_tables:
             continue
-        result = session.execute(text(f"DELETE FROM {model.__tablename__}"))
+        result = session.execute(text(f"DELETE FROM {table_name}"))
         rows = int(result.rowcount or 0)
         summary.deleted[label] = rows
         logger.info("Deleted {} rows from {}", rows, label)
@@ -221,10 +235,11 @@ def _truncate_paper_sqlite(initial_balance: float, summary: ResetSummary) -> Dic
 
 def _flag_engine_reset(session, initial_balance: float) -> None:
     """Signal the trading engine to reload executor state on the next cycle."""
+    now_iso = datetime.utcnow().isoformat()
     payload = {
         "value": True,
         "initial_balance": initial_balance,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": now_iso,
     }
     state = session.query(EngineState).filter(EngineState.key == "paper_reset_pending").first()
     if state:
@@ -232,7 +247,72 @@ def _flag_engine_reset(session, initial_balance: float) -> None:
         state.updated_at = datetime.utcnow()
     else:
         session.add(EngineState(key="paper_reset_pending", value=payload))
+    day_payload = {"date": datetime.utcnow().date().isoformat(), "equity": float(initial_balance)}
+    baseline_payload = {"equity": float(initial_balance)}
+    rebaseline_payload = {"value": True, "reason": "paper_reset", "timestamp": now_iso}
+    prop_rebaseline_payload = {"value": True, "reason": "paper_reset", "timestamp": now_iso}
+
+    day_state = session.query(EngineState).filter(EngineState.key == "kill_switch_day_start_equity").first()
+    if day_state:
+        day_state.value = day_payload
+        day_state.updated_at = datetime.utcnow()
+    else:
+        session.add(EngineState(key="kill_switch_day_start_equity", value=day_payload))
+
+    init_state = session.query(EngineState).filter(EngineState.key == "kill_switch_initial_equity").first()
+    if init_state:
+        init_state.value = baseline_payload
+        init_state.updated_at = datetime.utcnow()
+    else:
+        session.add(EngineState(key="kill_switch_initial_equity", value=baseline_payload))
+
+    rebaseline_state = session.query(EngineState).filter(EngineState.key == "kill_switch_rebaseline").first()
+    if rebaseline_state:
+        rebaseline_state.value = rebaseline_payload
+        rebaseline_state.updated_at = datetime.utcnow()
+    else:
+        session.add(EngineState(key="kill_switch_rebaseline", value=rebaseline_payload))
+
+    prop_day_state = session.query(EngineState).filter(EngineState.key == "prop_day_start_equity").first()
+    if prop_day_state:
+        prop_day_state.value = {"value": day_payload}
+        prop_day_state.updated_at = datetime.utcnow()
+    else:
+        session.add(EngineState(key="prop_day_start_equity", value={"value": day_payload}))
+
+    prop_max_state = session.query(EngineState).filter(EngineState.key == "prop_max_equity").first()
+    if prop_max_state:
+        prop_max_state.value = {"value": float(initial_balance)}
+        prop_max_state.updated_at = datetime.utcnow()
+    else:
+        session.add(EngineState(key="prop_max_equity", value={"value": float(initial_balance)}))
+
+    prop_streak_state = session.query(EngineState).filter(EngineState.key == "single_symbol_loss_streak").first()
+    if prop_streak_state:
+        prop_streak_state.value = {"value": 0}
+        prop_streak_state.updated_at = datetime.utcnow()
+    else:
+        session.add(EngineState(key="single_symbol_loss_streak", value={"value": 0}))
+
+    prop_cooldown_state = session.query(EngineState).filter(EngineState.key == "prop_cooldown_until").first()
+    if prop_cooldown_state:
+        prop_cooldown_state.value = {"value": None}
+        prop_cooldown_state.updated_at = datetime.utcnow()
+    else:
+        session.add(EngineState(key="prop_cooldown_until", value={"value": None}))
+
+    prop_rebaseline_state = session.query(EngineState).filter(EngineState.key == "prop_rebaseline_requested").first()
+    if prop_rebaseline_state:
+        prop_rebaseline_state.value = prop_rebaseline_payload
+        prop_rebaseline_state.updated_at = datetime.utcnow()
+    else:
+        session.add(EngineState(key="prop_rebaseline_requested", value=prop_rebaseline_payload))
     logger.info("Marked engine state for paper reset reconciliation")
+
+
+def _is_sqlite_corruption_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "database disk image is malformed" in msg
 
 
 def reset_paper_account(
@@ -250,37 +330,55 @@ def reset_paper_account(
         initial_balance if initial_balance is not None else settings.trading.paper_initial_balance
     )
     summary = ResetSummary(initial_balance=target_balance, dry_run=not confirm)
-    engine = database.get_engine()
-    inspector = inspect(engine)
-    session = sessionmaker(bind=engine)()
     sqlite_counts = _collect_paper_sqlite_counts()
     summary.sqlite_deleted.update(sqlite_counts)
-    try:
-        _close_open_trades(session, summary, confirm)
-        _collect_table_counts(session, inspector, summary)
-        if confirm:
-            _delete_tables(session, inspector, summary)
-            deleted_sqlite = _truncate_paper_sqlite(target_balance, summary)
-            summary.sqlite_deleted.update(deleted_sqlite)
-            _flag_engine_reset(session, target_balance)
-            summary.updated["reset_flag_set"] = 1
-            summary.dry_run = False
-            session.commit()
-            try:
-                summary.updated["post_reset_trade_count"] = int(session.query(Trade).count())
-            except Exception:
-                summary.updated["post_reset_trade_count"] = -1
-        else:
+    max_attempts = 2
+    for attempt in range(1, max_attempts + 1):
+        engine = database.get_engine()
+        session = sessionmaker(bind=engine)()
+        try:
+            available_tables = set(inspect(session.connection()).get_table_names())
+            _close_open_trades(session, summary, confirm)
+            _collect_table_counts(session, available_tables, summary)
+            if confirm:
+                _delete_tables(session, available_tables, summary)
+                deleted_sqlite = _truncate_paper_sqlite(target_balance, summary)
+                summary.sqlite_deleted.update(deleted_sqlite)
+                _flag_engine_reset(session, target_balance)
+                summary.updated["reset_flag_set"] = 1
+                summary.dry_run = False
+                session.commit()
+                try:
+                    summary.updated["post_reset_trade_count"] = int(session.query(Trade).count())
+                except Exception:
+                    summary.updated["post_reset_trade_count"] = -1
+            else:
+                session.rollback()
+            logger.info("Paper reset summary: {}", summary.to_dict())
+            return summary
+        except SQLAlchemyError as exc:
             session.rollback()
-        logger.info("Paper reset summary: {}", summary.to_dict())
-        return summary
-    except SQLAlchemyError as exc:
-        session.rollback()
-        logger.exception("Paper reset aborted due to database error: {}", exc)
-        raise
-    except Exception as exc:
-        session.rollback()
-        logger.exception("Paper reset failed: {}", exc)
-        raise
-    finally:
-        session.close()
+            if (
+                settings.database.database_mode == "SQLITE"
+                and _is_sqlite_corruption_error(exc)
+                and attempt < max_attempts
+            ):
+                logger.error(
+                    "Paper reset detected corrupt SQLite database; rebuilding and retrying (attempt {}/{})",
+                    attempt + 1,
+                    max_attempts,
+                )
+                database.dispose_engine()
+                database.init_db()
+                continue
+            logger.exception("Paper reset aborted due to database error: {}", exc)
+            raise
+        except Exception as exc:
+            session.rollback()
+            logger.exception("Paper reset failed: {}", exc)
+            raise
+        finally:
+            session.close()
+
+    # loop always returns or raises
+    return summary

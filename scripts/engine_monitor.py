@@ -28,10 +28,11 @@ ENGINE_NAMES: Dict[str, List[str]] = {
 }
 
 ERROR_PATTERNS = [
-    "ERROR",
+    "CRITICAL",
     "Model load failed",
     "CUDA error",
     "Out of memory",
+    "EMERGENCY_CLEANUP_FAILED",
 ]
 
 
@@ -218,18 +219,15 @@ class EngineMonitor:
             self._write_report("restart_failed", f"{container_name}: {exc}")
 
     def _disable_tft_for_symbol(self, symbol: str, issues: List[str]) -> None:
-        symbol_state = STATE_ROOT / symbol
-        symbol_state.mkdir(parents=True, exist_ok=True)
-        flag_path = symbol_state / "tft_disabled.flag"
-        content = (
-            f"disabled_at={datetime.utcnow().isoformat()}Z\n"
-            f"reason=repeated_monitor_failure\n"
-            f"issues={','.join(issues)}\n"
-            f"max_tft_retries={MAX_TFT_RETRIES}\n"
-            "tft_auto_load_disabled=true\n"
+        """Log repeated failures but do NOT write filesystem disable flags.
+        The engine handles degraded mode internally. Writing flags caused a
+        death-spiral where the monitor's 'fix' prevented recovery."""
+        self._write_report(
+            "repeated_failure_logged",
+            f"{symbol}: {issues} (failure_count={self.failure_counts.get(symbol, 0)}). "
+            f"NOT writing tft_disabled.flag — engine manages its own fallback mode.",
         )
-        flag_path.write_text(content, encoding="utf-8")
-        self._write_report("tft_disabled", f"{symbol}: {flag_path}")
+        # Still restart the container to give it a fresh chance
         container = self._resolve_container(symbol)
         if container is not None:
             self._restart_container(container.name)

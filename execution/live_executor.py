@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from config.settings import XRP_ONLY_SYMBOL
+from config.settings import ACTIVE_SYMBOL
 from data.database import Trade, get_session
 from risk.safety_layer import validate_price
 from utils.logging import log_api_error
@@ -36,8 +36,8 @@ class LiveExecutor(BaseExecutor):
 
     @staticmethod
     def _assert_symbol(symbol: str) -> None:
-        if symbol != XRP_ONLY_SYMBOL:
-            raise RuntimeError(f"XRP-only mode: unsupported symbol {symbol}")
+        if symbol != ACTIVE_SYMBOL:
+            raise RuntimeError(f"Symbol mismatch: expected {ACTIVE_SYMBOL}, got {symbol}")
 
     def get_balance(self) -> float:
         self._validate_live_clients()
@@ -339,7 +339,7 @@ class LiveExecutor(BaseExecutor):
             )
 
     def reconcile_positions(self) -> None:
-        symbols = {XRP_ONLY_SYMBOL}
+        symbols = {ACTIVE_SYMBOL}
         session = get_session()
         try:
             open_pairs = (

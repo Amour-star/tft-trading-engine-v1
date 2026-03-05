@@ -122,7 +122,8 @@ def patch_db(db_engine):
 def make_ohlcv(n: int = 300, base_price: float = 100.0, seed: int = 42) -> pd.DataFrame:
     """Create synthetic OHLCV data."""
     np.random.seed(seed)
-    timestamps = [datetime(2024, 1, 1) + timedelta(minutes=15 * i) for i in range(n)]
+    end_ts = datetime.utcnow()
+    timestamps = [end_ts - timedelta(minutes=15 * (n - i - 1)) for i in range(n)]
     close = base_price + np.cumsum(np.random.randn(n) * 0.5)
     high = close + np.abs(np.random.randn(n) * 0.3)
     low = close - np.abs(np.random.randn(n) * 0.3)

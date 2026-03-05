@@ -1,5 +1,0 @@
-disabled_at=2026-03-01T23:26:10.473497Z
-reason=repeated_monitor_failure
-issues=No trades for > 6 hours
-max_tft_retries=1
-tft_auto_load_disabled=true

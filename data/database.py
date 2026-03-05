@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import atexit
 import importlib
+import os
+from pathlib import Path
 import threading
+import time
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -29,6 +32,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Session, scoped_session, sessionmaker
 from loguru import logger
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.exc import OperationalError
 
 from config.settings import settings
 
@@ -111,6 +115,52 @@ class Prediction(Base):
     model_version = Column(String(50), nullable=True)
     acted_on = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SignalRecord(Base):
+    """Multi-factor signal log for audit and analytics."""
+    __tablename__ = "signals"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp = Column(DateTime, nullable=False, index=True, default=datetime.utcnow)
+    pair = Column(String(20), nullable=False, index=True)
+    timeframe = Column(String(10), nullable=False, default="1min")
+    decision = Column(String(10), nullable=False, default="HOLD")  # LONG, SHORT, HOLD
+    side = Column(String(6), nullable=False, default="HOLD")  # BUY, SELL, HOLD
+    signal_score = Column(Float, nullable=False, default=0.0)
+    momentum_factor = Column(Float, nullable=False, default=0.0)
+    volatility_factor = Column(Float, nullable=False, default=0.0)
+    trend_factor = Column(Float, nullable=False, default=0.0)
+    mean_reversion_factor = Column(Float, nullable=False, default=0.0)
+    volume_factor = Column(Float, nullable=False, default=0.0)
+    volume_imbalance = Column(Float, nullable=False, default=0.0)
+    model_confidence = Column(Float, nullable=False, default=0.0)
+    regime = Column(String(32), nullable=True)
+    payload = Column(JSON, nullable=True)
+
+    __table_args__ = (
+        Index("ix_signals_pair_timeframe_ts", "pair", "timeframe", "timestamp"),
+    )
+
+
+class EquityHistory(Base):
+    """Time-series account state used for live equity curve and exposure analytics."""
+    __tablename__ = "equity_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp = Column(DateTime, nullable=False, index=True, default=datetime.utcnow)
+    symbol = Column(String(20), nullable=False, index=True)
+    mode = Column(String(10), nullable=False, default="PAPER")
+    balance = Column(Float, nullable=False, default=0.0)
+    realized_pnl = Column(Float, nullable=False, default=0.0)
+    unrealized_pnl = Column(Float, nullable=False, default=0.0)
+    equity = Column(Float, nullable=False, default=0.0)
+    exposure = Column(Float, nullable=False, default=0.0)
+    open_positions = Column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        Index("ix_equity_history_symbol_ts", "symbol", "timestamp"),
+    )
 
 
 class ModelMetric(Base):
@@ -245,6 +295,27 @@ class StrategyParameter(Base):
     ppo_weight = Column(Float, nullable=False, default=0.2)
     confidence_threshold = Column(Float, nullable=False, default=0.50)
     risk_per_trade = Column(Float, nullable=False, default=0.01)
+
+
+class MetricSnapshot(Base):
+    """Institutional metric snapshots for dashboard/api consumers."""
+    __tablename__ = "metrics"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp = Column(DateTime, nullable=False, index=True, default=datetime.utcnow)
+    symbol = Column(String(20), nullable=False, index=True)
+    sharpe = Column(Float, nullable=False, default=0.0)
+    sortino = Column(Float, nullable=False, default=0.0)
+    max_drawdown = Column(Float, nullable=False, default=0.0)
+    win_rate = Column(Float, nullable=False, default=0.0)
+    profit_factor = Column(Float, nullable=False, default=0.0)
+    average_trade = Column(Float, nullable=False, default=0.0)
+    exposure = Column(Float, nullable=False, default=0.0)
+    equity = Column(Float, nullable=False, default=0.0)
+    rolling_volatility = Column(Float, nullable=False, default=0.0)
+    total_trades = Column(Integer, nullable=False, default=0)
+    winning_trades = Column(Integer, nullable=False, default=0)
+    losing_trades = Column(Integer, nullable=False, default=0)
 
 
 class GovernanceLog(Base):
@@ -437,6 +508,43 @@ def _validate_connection(engine) -> None:
         conn.execute(text("SELECT 1"))
 
 
+def _validate_sqlite_integrity(engine) -> None:
+    """Run a lightweight integrity check before exposing a SQLite engine."""
+    with engine.connect() as conn:
+        row = conn.execute(text("PRAGMA quick_check")).fetchone()
+    status = str(row[0]).strip().lower() if row and row[0] is not None else "ok"
+    if status != "ok":
+        raise RuntimeError(f"SQLite integrity check failed: {status}")
+
+
+def _is_sqlite_corruption_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "database disk image is malformed" in message
+        or "sqlite integrity check failed" in message
+    )
+
+
+def _quarantine_corrupt_sqlite_files(db_path: Path) -> None:
+    """Move corrupt sqlite files away so a clean DB can be recreated."""
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    candidates = [db_path, Path(str(db_path) + "-wal"), Path(str(db_path) + "-shm")]
+    for src in candidates:
+        if not src.exists():
+            continue
+        backup = src.with_name(f"{src.name}.corrupt.{timestamp}")
+        try:
+            os.replace(src, backup)
+            logger.warning("Quarantined corrupt sqlite file: {} -> {}", src, backup)
+        except Exception as move_exc:
+            logger.warning("Failed to quarantine sqlite file {}: {}", src, move_exc)
+            try:
+                src.unlink(missing_ok=True)
+                logger.warning("Deleted sqlite file after failed quarantine: {}", src)
+            except Exception as unlink_exc:
+                logger.error("Could not remove corrupt sqlite file {}: {}", src, unlink_exc)
+
+
 def get_engine():
     global _engine
     if _engine is not None:
@@ -447,9 +555,48 @@ def get_engine():
             return _engine
 
         if settings.database.database_mode == "SQLITE":
-            logger.info(f"Using SQLite database: {settings.database.sqlite_resolved_path}")
-            _engine = _create_sqlite_engine()
-            _validate_connection(_engine)
+            sqlite_path = settings.database.sqlite_resolved_path
+            logger.info(f"Using SQLite database: {sqlite_path}")
+            recovered = False
+            while True:
+                _engine = _create_sqlite_engine()
+                max_attempts = 8
+                try:
+                    for attempt in range(1, max_attempts + 1):
+                        try:
+                            _validate_connection(_engine)
+                            break
+                        except OperationalError as exc:
+                            message = str(exc).lower()
+                            if "unable to open database file" not in message or attempt >= max_attempts:
+                                raise
+                            sleep_s = min(2.0, 0.25 * attempt)
+                            logger.warning(
+                                "SQLite open failed (attempt {}/{}): {}. Retrying in {:.2f}s",
+                                attempt,
+                                max_attempts,
+                                exc,
+                                sleep_s,
+                            )
+                            time.sleep(sleep_s)
+                    _validate_sqlite_integrity(_engine)
+                    break
+                except Exception as exc:
+                    if not recovered and _is_sqlite_corruption_error(exc):
+                        logger.error(
+                            "SQLite corruption detected at {} ({}). Rebuilding database file.",
+                            sqlite_path,
+                            exc,
+                        )
+                        try:
+                            _engine.dispose()
+                        except Exception:
+                            pass
+                        _engine = None
+                        _quarantine_corrupt_sqlite_files(sqlite_path)
+                        recovered = True
+                        continue
+                    raise
             if settings.database.sqlite_wal_mode:
                 logger.info("WAL mode enabled")
             logger.info("SQLite optimized for single-node execution")

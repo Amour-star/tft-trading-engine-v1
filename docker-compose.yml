@@ -3,8 +3,28 @@ services:
     image: redis:7-alpine
     container_name: tft-redis
     restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Europe/Berlin}
     volumes:
       - redis_data:/data
+
+  database:
+    image: postgres:16-alpine
+    container_name: tft-database
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Europe/Berlin}
+      POSTGRES_DB: ${POSTGRES_DB:-tft_trading}
+      POSTGRES_USER: ${POSTGRES_USER:-trader}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-trader} -d ${POSTGRES_DB:-tft_trading}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
   engine-btc:
     build:
@@ -15,20 +35,39 @@ services:
     env_file: .env
     environment:
       SYMBOL: BTC-USDT
-      SPOT_ONLY_MODE: "true"
+      SPOT_ONLY_MODE: "false"
+      ALLOW_SHORTS: "true"
+      MAX_POSITION_PCT: "1.0"
+      MAX_NOTIONAL_PER_TRADE: "1000000000"
       ORACLE_ENABLED: "false"
       REDIS_HOST: redis
+      DATABASE_MODE: ${DATABASE_MODE:-SQLITE}
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-tft_trading}
+      POSTGRES_USER: ${POSTGRES_USER:-trader}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
       SQLITE_PATH: /app/state/tft_engine.db
       PAPER_DB_PATH: /app/state/paper_trading.db
       ENGINE_LOCK_FILE: /app/state/tft_engine.lock
+      ENGINE_HEALTH_PORT: "9000"
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:
       - ./state/btc:/app/state
       - ./saved_models:/app/saved_models:ro
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3.11", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/health')"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
     depends_on:
-      - redis
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_started
     runtime: nvidia
     deploy:
       resources:
@@ -44,6 +83,12 @@ services:
       SYMBOL: BTC-USDT
       ORACLE_ENABLED: "false"
       REDIS_HOST: redis
+      DATABASE_MODE: ${DATABASE_MODE:-SQLITE}
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-tft_trading}
+      POSTGRES_USER: ${POSTGRES_USER:-trader}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
       SQLITE_PATH: /app/state/tft_engine.db
       PAPER_DB_PATH: /app/state/paper_trading.db
       ENGINE_LOCK_FILE: /app/state/tft_engine.lock
@@ -53,8 +98,17 @@ services:
     ports:
       - "8001:8000"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3.11", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     depends_on:
-      - engine-btc
+      database:
+        condition: service_healthy
+      engine-btc:
+        condition: service_healthy
 
   engine-eth:
     image: tft-engine-runtime:latest
@@ -62,21 +116,41 @@ services:
     env_file: .env
     environment:
       SYMBOL: ETH-USDT
-      SPOT_ONLY_MODE: "true"
+      SPOT_ONLY_MODE: "false"
+      ALLOW_SHORTS: "true"
+      MAX_POSITION_PCT: "1.0"
+      MAX_NOTIONAL_PER_TRADE: "1000000000"
       ORACLE_ENABLED: "false"
       REDIS_HOST: redis
+      DATABASE_MODE: ${DATABASE_MODE:-SQLITE}
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-tft_trading}
+      POSTGRES_USER: ${POSTGRES_USER:-trader}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
       SQLITE_PATH: /app/state/tft_engine.db
       PAPER_DB_PATH: /app/state/paper_trading.db
       ENGINE_LOCK_FILE: /app/state/tft_engine.lock
+      ENGINE_HEALTH_PORT: "9000"
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:
       - ./state/eth:/app/state
       - ./saved_models:/app/saved_models:ro
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3.11", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/health')"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
     depends_on:
-      - redis
-      - engine-btc
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      engine-btc:
+        condition: service_started
     runtime: nvidia
     deploy:
       resources:
@@ -92,6 +166,12 @@ services:
       SYMBOL: ETH-USDT
       ORACLE_ENABLED: "false"
       REDIS_HOST: redis
+      DATABASE_MODE: ${DATABASE_MODE:-SQLITE}
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-tft_trading}
+      POSTGRES_USER: ${POSTGRES_USER:-trader}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
       SQLITE_PATH: /app/state/tft_engine.db
       PAPER_DB_PATH: /app/state/paper_trading.db
       ENGINE_LOCK_FILE: /app/state/tft_engine.lock
@@ -101,8 +181,17 @@ services:
     ports:
       - "8002:8000"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3.11", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     depends_on:
-      - engine-eth
+      database:
+        condition: service_healthy
+      engine-eth:
+        condition: service_healthy
 
   engine-xrp:
     image: tft-engine-runtime:latest
@@ -110,21 +199,41 @@ services:
     env_file: .env
     environment:
       SYMBOL: XRP-USDT
-      SPOT_ONLY_MODE: "true"
+      SPOT_ONLY_MODE: "false"
+      ALLOW_SHORTS: "true"
+      MAX_POSITION_PCT: "1.0"
+      MAX_NOTIONAL_PER_TRADE: "1000000000"
       ORACLE_ENABLED: "false"
       REDIS_HOST: redis
+      DATABASE_MODE: ${DATABASE_MODE:-SQLITE}
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-tft_trading}
+      POSTGRES_USER: ${POSTGRES_USER:-trader}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
       SQLITE_PATH: /app/state/tft_engine.db
       PAPER_DB_PATH: /app/state/paper_trading.db
       ENGINE_LOCK_FILE: /app/state/tft_engine.lock
+      ENGINE_HEALTH_PORT: "9000"
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:
       - ./state/xrp:/app/state
       - ./saved_models:/app/saved_models:ro
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3.11", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/health')"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
     depends_on:
-      - redis
-      - engine-btc
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      engine-btc:
+        condition: service_started
     runtime: nvidia
     deploy:
       resources:
@@ -140,6 +249,12 @@ services:
       SYMBOL: XRP-USDT
       ORACLE_ENABLED: "false"
       REDIS_HOST: redis
+      DATABASE_MODE: ${DATABASE_MODE:-SQLITE}
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-tft_trading}
+      POSTGRES_USER: ${POSTGRES_USER:-trader}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
       SQLITE_PATH: /app/state/tft_engine.db
       PAPER_DB_PATH: /app/state/paper_trading.db
       ENGINE_LOCK_FILE: /app/state/tft_engine.lock
@@ -149,8 +264,17 @@ services:
     ports:
       - "8003:8000"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3.11", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     depends_on:
-      - engine-xrp
+      database:
+        condition: service_healthy
+      engine-xrp:
+        condition: service_healthy
 
   engine-doge:
     image: tft-engine-runtime:latest
@@ -158,21 +282,41 @@ services:
     env_file: .env
     environment:
       SYMBOL: DOGE-USDT
-      SPOT_ONLY_MODE: "true"
+      SPOT_ONLY_MODE: "false"
+      ALLOW_SHORTS: "true"
+      MAX_POSITION_PCT: "1.0"
+      MAX_NOTIONAL_PER_TRADE: "1000000000"
       ORACLE_ENABLED: "false"
       REDIS_HOST: redis
+      DATABASE_MODE: ${DATABASE_MODE:-SQLITE}
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-tft_trading}
+      POSTGRES_USER: ${POSTGRES_USER:-trader}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
       SQLITE_PATH: /app/state/tft_engine.db
       PAPER_DB_PATH: /app/state/paper_trading.db
       ENGINE_LOCK_FILE: /app/state/tft_engine.lock
+      ENGINE_HEALTH_PORT: "9000"
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:
       - ./state/doge:/app/state
       - ./saved_models:/app/saved_models:ro
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3.11", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/health')"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
     depends_on:
-      - redis
-      - engine-btc
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      engine-btc:
+        condition: service_started
     runtime: nvidia
     deploy:
       resources:
@@ -188,6 +332,12 @@ services:
       SYMBOL: DOGE-USDT
       ORACLE_ENABLED: "false"
       REDIS_HOST: redis
+      DATABASE_MODE: ${DATABASE_MODE:-SQLITE}
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-tft_trading}
+      POSTGRES_USER: ${POSTGRES_USER:-trader}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
       SQLITE_PATH: /app/state/tft_engine.db
       PAPER_DB_PATH: /app/state/paper_trading.db
       ENGINE_LOCK_FILE: /app/state/tft_engine.lock
@@ -197,8 +347,17 @@ services:
     ports:
       - "8004:8000"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3.11", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     depends_on:
-      - engine-doge
+      database:
+        condition: service_healthy
+      engine-doge:
+        condition: service_healthy
 
   training:
     profiles: ["training"]
@@ -211,6 +370,12 @@ services:
     environment:
       ORACLE_ENABLED: "false"
       REDIS_HOST: redis
+      DATABASE_MODE: ${DATABASE_MODE:-SQLITE}
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-tft_trading}
+      POSTGRES_USER: ${POSTGRES_USER:-trader}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
       SQLITE_PATH: /app/state/tft_engine.db
       PAPER_DB_PATH: /app/state/paper_trading.db
       ENGINE_LOCK_FILE: /app/state/tft_engine.lock
@@ -220,7 +385,10 @@ services:
       - ./state/training:/app/state
       - ./saved_models:/app/saved_models
     depends_on:
-      - redis
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_started
     runtime: nvidia
     deploy:
       resources:
@@ -244,13 +412,23 @@ services:
     volumes:
       - ./state:/app/state:ro
     ports:
-      - "8501:8501"
+      - "${DASHBOARD_HOST_PORT:-8501}:8501"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3.11", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
     depends_on:
-      - api-btc
-      - api-eth
-      - api-xrp
-      - api-doge
+      api-btc:
+        condition: service_healthy
+      api-eth:
+        condition: service_healthy
+      api-xrp:
+        condition: service_healthy
+      api-doge:
+        condition: service_healthy
 
   engine-monitor:
     build:
@@ -274,5 +452,94 @@ services:
       - engine-xrp
       - engine-doge
 
+  quant-engine:
+    profiles: ["quant"]
+    build:
+      context: .
+      dockerfile: Dockerfile.engine
+    image: tft-engine-runtime:latest
+    command: ["python3.11", "scripts/run_quant_engine.py"]
+    env_file: .env
+    environment:
+      QUANT_ENGINE_ENABLED: "true"
+      TRADING_MODE: PAPER
+      UNIVERSE: ${UNIVERSE:-BTC-USDT,ETH-USDT,SOL-USDT,BNB-USDT,DOGE-USDT,XRP-USDT,AVAX-USDT}
+      ENGINE_MARKET_INTERVAL_SECONDS: "10"
+      ENGINE_SIGNAL_INTERVAL_SECONDS: "60"
+      ENGINE_REBALANCE_INTERVAL_SECONDS: "300"
+      SQLITE_PATH: /app/state/tft_engine.db
+      PAPER_DB_PATH: /app/state/paper_trading.db
+      ENGINE_LOCK_FILE: /app/state/tft_engine.lock
+      DATABASE_MODE: ${DATABASE_MODE:-SQLITE}
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-tft_trading}
+      POSTGRES_USER: ${POSTGRES_USER:-trader}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
+    volumes:
+      - ./state/quant:/app/state
+      - ./saved_models:/app/saved_models:ro
+    restart: unless-stopped
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  quant-api:
+    profiles: ["quant"]
+    build:
+      context: .
+      dockerfile: Dockerfile.engine
+    image: tft-engine-runtime:latest
+    command: ["python3.11", "-m", "uvicorn", "dashboard.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: .env
+    environment:
+      QUANT_ENGINE_ENABLED: "true"
+      TRADING_MODE: PAPER
+      UNIVERSE: ${UNIVERSE:-BTC-USDT,ETH-USDT,SOL-USDT,BNB-USDT,DOGE-USDT,XRP-USDT,AVAX-USDT}
+      SQLITE_PATH: /app/state/tft_engine.db
+      PAPER_DB_PATH: /app/state/paper_trading.db
+      ENGINE_LOCK_FILE: /app/state/tft_engine.lock
+      DATABASE_MODE: ${DATABASE_MODE:-SQLITE}
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-tft_trading}
+      POSTGRES_USER: ${POSTGRES_USER:-trader}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
+    volumes:
+      - ./state/quant:/app/state
+      - ./saved_models:/app/saved_models:ro
+    ports:
+      - "8010:8000"
+    restart: unless-stopped
+    depends_on:
+      database:
+        condition: service_healthy
+      quant-engine:
+        condition: service_started
+
+  quant-dashboard:
+    profiles: ["quant"]
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    image: tft-dashboard:latest
+    env_file: .env
+    environment:
+      QUANT_ENGINE_ENABLED: "true"
+      API_BASE: http://quant-api:8000/api
+      UNIVERSE: ${UNIVERSE:-BTC-USDT,ETH-USDT,SOL-USDT,BNB-USDT,DOGE-USDT,XRP-USDT,AVAX-USDT}
+    ports:
+      - "8510:8501"
+    restart: unless-stopped
+    depends_on:
+      quant-api:
+        condition: service_started
+
 volumes:
   redis_data:
+  postgres_data:
+
+
+

@@ -15,8 +15,8 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
-from config.settings import TRADING_UNIVERSE, XRP_ONLY_SYMBOL, settings
-from data.database import DecisionEvent, PerformanceMetric, Prediction, Trade, get_session
+from config.settings import ACTIVE_SYMBOL, TRADING_UNIVERSE, XRP_ONLY_SYMBOL, settings
+from data.database import DecisionEvent, PerformanceMetric, Prediction, SignalRecord, Trade, get_session
 from data.fetcher import KuCoinDataFetcher
 from data.features import compute_features
 from engine.adaptive_threshold import AdaptiveConfidenceThreshold
@@ -71,6 +71,14 @@ class TradeSignal:
     final_ai_score: float = 0.0
     weight_snapshot: Dict[str, Any] = field(default_factory=dict)
     risk_per_trade: float = 0.01
+    signal_score: float = 0.5
+    momentum_factor: float = 0.5
+    volatility_factor: float = 0.5
+    trend_factor: float = 0.5
+    mean_reversion_factor: float = 0.5
+    volume_factor: float = 0.5
+    volume_imbalance: float = 0.0
+    decision_label: str = "HOLD"
     timestamp: datetime = field(default_factory=datetime.utcnow)
 
 
@@ -131,6 +139,13 @@ class DecisionEngine:
         self._spread_max_pct: float = float(settings.trading.max_spread_pct)
         self._min_volume_ratio: float = 0.5
         self._btc_corr_weight: float = 0.15
+        self._factor_weights: Dict[str, float] = {
+            "momentum": 0.28,
+            "volatility": 0.16,
+            "trend": 0.24,
+            "mean_reversion": 0.14,
+            "volume": 0.18,
+        }
 
     # ------------------------------------------------------------------
     # Main signal generation pipeline
@@ -141,9 +156,14 @@ class DecisionEngine:
         Full pipeline: scan pairs → evaluate → select best → generate signal.
         Returns None if no valid signal found.
         """
-        if TRADING_UNIVERSE != [XRP_ONLY_SYMBOL]:
-            raise RuntimeError("Engine must run XRP-only mode")
-        logger.info("Starting signal generation cycle")
+        fallback_mode = self._is_tft_fallback_mode()
+        logger.bind(
+            event="DECISION_CYCLE_STARTED",
+            symbol=ACTIVE_SYMBOL,
+            fallback_mode=fallback_mode,
+            model_loaded=self.predictor.model is not None,
+            model_version=self.predictor.model_version or "none",
+        ).info("DECISION_CYCLE_STARTED")
 
         # 1. Get candidate pairs
         candidates = self._get_candidate_pairs()
@@ -165,14 +185,14 @@ class DecisionEngine:
 
         supported_list = sorted(supported_pairs)
         logger.info(f"Model supports: {supported_list}")
-        if XRP_ONLY_SYMBOL not in supported_pairs:
+        if ACTIVE_SYMBOL not in supported_pairs:
             logger.error(
-                "Model vocabulary excludes XRP-USDT while engine is locked to XRP-only mode"
+                f"Model vocabulary excludes {ACTIVE_SYMBOL} while engine is locked to this symbol"
             )
             self._record_no_trade_event(
                 evaluations=[],
                 valid=[],
-                reason="model_missing_xrp_vocabulary",
+                reason=f"model_missing_{ACTIVE_SYMBOL}_vocabulary",
             )
             return None
 
@@ -189,6 +209,16 @@ class DecisionEngine:
         # 3. Filter disqualified pairs
         disqualified = [e for e in evaluations if e.disqualified]
         valid = [e for e in evaluations if not e.disqualified]
+
+        for ev in evaluations:
+            logger.bind(
+                event="CANDIDATE_GENERATED",
+                pair=ev.pair,
+                score=round(ev.score, 4),
+                disqualified=ev.disqualified,
+                disqualify_reason=ev.disqualify_reason or None,
+                fallback_mode=fallback_mode,
+            ).info("CANDIDATE_GENERATED")
 
         if disqualified:
             # Log disqualification summary so operators can diagnose
@@ -260,29 +290,33 @@ class DecisionEngine:
     # ------------------------------------------------------------------
 
     def _get_candidate_pairs(self) -> List[Dict[str, Any]]:
-        """Return the hard-locked XRP trading universe."""
-        logger.info("Universe locked to XRP-USDT")
-        logger.info("Universe size: 1 | XRP-USDT")
-        return [{"symbol": XRP_ONLY_SYMBOL, "volValue": "0"}]
+        """Return the single symbol assigned to this engine instance."""
+        logger.info(f"Universe locked to {ACTIVE_SYMBOL}")
+        logger.info(f"Universe size: 1 | {ACTIVE_SYMBOL}")
+        return [{"symbol": ACTIVE_SYMBOL, "volValue": "0"}]
 
-    def _get_supported_pairs(self) -> Optional[set[str]]:
+    def _get_supported_pairs(self) -> set[str]:
         """
         Return model-supported pairs if predictor exposes vocabulary introspection.
+        In fallback mode, returns the active symbol as supported.
         """
         if self._is_tft_fallback_mode():
-            return {XRP_ONLY_SYMBOL}
+            return {ACTIVE_SYMBOL}
 
         getter = getattr(self.predictor, "get_supported_pairs", None)
         if not callable(getter):
-            raise RuntimeError("Predictor must expose get_supported_pairs() in XRP-only mode")
+            logger.warning(f"Predictor does not expose get_supported_pairs(); assuming {ACTIVE_SYMBOL} supported")
+            return {ACTIVE_SYMBOL}
 
         supported_raw = getter()
         if not isinstance(supported_raw, (list, tuple, set)):
-            raise RuntimeError("Predictor returned invalid pair vocabulary in XRP-only mode")
+            logger.warning(f"Predictor returned invalid pair vocabulary; assuming {ACTIVE_SYMBOL} supported")
+            return {ACTIVE_SYMBOL}
 
         supported = {str(item).strip() for item in supported_raw if str(item).strip()}
         if not supported:
-            raise RuntimeError("Predictor pair vocabulary is empty in XRP-only mode")
+            logger.warning(f"Predictor pair vocabulary is empty; assuming {ACTIVE_SYMBOL} supported")
+            return {ACTIVE_SYMBOL}
         return supported
 
     def _evaluate_pair(
@@ -452,23 +486,38 @@ class DecisionEngine:
 
         self._record_prediction(pair, prediction, features)
 
-        # ---- Confidence check ----
+        multifactor = self._compute_multifactor_components(pair, latest, df)
+        prediction["signal_score"] = float(multifactor["signal_score"])
+        prediction["momentum_factor"] = float(multifactor["momentum_factor"])
+        prediction["volatility_factor"] = float(multifactor["volatility_factor"])
+        prediction["trend_factor"] = float(multifactor["trend_factor"])
+        prediction["mean_reversion_factor"] = float(multifactor["mean_reversion_factor"])
+        prediction["volume_factor"] = float(multifactor["volume_factor"])
+        prediction["volume_imbalance"] = float(multifactor["volume_imbalance"])
+        score += float(multifactor["signal_score"]) * 0.35
+        reasons.append(
+            "Multi-factor score: "
+            f"{float(multifactor['signal_score']):.3f} "
+            f"(mom={float(multifactor['momentum_factor']):.3f}, "
+            f"vol={float(multifactor['volatility_factor']):.3f}, "
+            f"trend={float(multifactor['trend_factor']):.3f}, "
+            f"mr={float(multifactor['mean_reversion_factor']):.3f}, "
+            f"volume={float(multifactor['volume_factor']):.3f}, "
+            f"imbalance={float(multifactor['volume_imbalance']):.3f})"
+        )
+
+        # ---- Confidence check (aggressive mode: base threshold 0.45) ----
         ai_score = float(prediction.get("meta_probability", 0.0))
-        partial_band = 0.05
-        if ai_score < adaptive_threshold - partial_band:
+        aggressive_threshold = 0.45
+        if ai_score < aggressive_threshold:
             return PairEvaluation(
                 pair=pair, score=0, prediction=prediction, features=features,
-                reasons=[f"Meta probability {ai_score:.3f} < threshold {adaptive_threshold:.3f}"],
+                reasons=[f"Meta probability {ai_score:.3f} < aggressive threshold {aggressive_threshold:.3f}"],
                 disqualified=True,
-                disqualify_reason="Below meta confidence threshold",
+                disqualify_reason="Below confidence threshold",
             )
-        if ai_score < adaptive_threshold:
-            prediction["size_scale"] = 0.5
-            reasons.append(
-                f"Near-threshold confidence ({ai_score:.3f} < {adaptive_threshold:.3f}) -> half size"
-            )
-        else:
-            prediction["size_scale"] = 1.0
+        prediction["size_scale"] = 1.0
+        reasons.append(f"Confidence {ai_score:.3f} >= {aggressive_threshold:.3f} threshold")
 
         tft_confidence = float(prediction.get("confidence", 0.0))
 
@@ -487,15 +536,13 @@ class DecisionEngine:
         score += min(max(features.get("regime_score", 0.0), 0.0), 1.0) * 0.05
         reasons.append(f"Regime score: {features.get('regime_score', 0.0):.3f}")
 
-        # ---- Volatility check ----
+        # ---- Volatility check (aggressive: regime modifies size, never blocks) ----
         vol_regime = features["volatility_regime"]
         if vol_regime == "extreme":
-            return PairEvaluation(
-                pair=pair, score=0, prediction=prediction, features=features,
-                reasons=["Extreme volatility"], disqualified=True,
-                disqualify_reason="Extreme volatility regime",
-            )
-        if vol_regime == "low":
+            score += 0.01
+            prediction["size_scale"] = 0.5  # Reduce size but don't block
+            reasons.append("Extreme volatility (reduced position size)")
+        elif vol_regime == "low":
             score += 0.05
             reasons.append("Low volatility (good for controlled trades)")
         elif vol_regime == "normal":
@@ -592,13 +639,44 @@ class DecisionEngine:
 
         prob_up = float(pred.get("prob_up", 0.0))
         prob_down = float(pred.get("prob_down", 0.0))
-        bearish = prob_up <= prob_down
-        if bearish and not self.allow_shorts:
+        signal_score = self._bounded(pred.get("signal_score", 0.5))
+        if signal_score >= 0.58:
+            decision_label = "LONG"
+        elif signal_score <= 0.42:
+            decision_label = "SHORT"
+        else:
+            if prob_up - prob_down >= 0.05:
+                decision_label = "LONG"
+            elif prob_down - prob_up >= 0.05:
+                decision_label = "SHORT"
+            else:
+                decision_label = "HOLD"
+
+        if decision_label == "SHORT" and not self.allow_shorts:
             logger.info(f"{pair}: Bearish signal skipped (ALLOW_SHORTS disabled)")
+            self._record_signal_record(
+                pair=pair,
+                signal_score=signal_score,
+                decision="HOLD",
+                side="HOLD",
+                prediction=pred,
+                reason="short_disabled",
+            )
             return None
 
-        direction = "SHORT" if bearish else "LONG"
-        side = "SELL" if bearish else "BUY"
+        if decision_label == "HOLD":
+            self._record_signal_record(
+                pair=pair,
+                signal_score=signal_score,
+                decision="HOLD",
+                side="HOLD",
+                prediction=pred,
+                reason="neutral_score",
+            )
+            return None
+
+        direction = decision_label
+        side = "SELL" if decision_label == "SHORT" else "BUY"
 
         try:
             ticker = self.fetcher.get_ticker(pair)
@@ -667,22 +745,18 @@ class DecisionEngine:
                 max(self.confidence_threshold, getattr(self, "min_confidence", self.confidence_threshold)),
             )
         )
+        # Aggressive mode: regime score does NOT block trades, only logged
         if regime_score < 0.10:
-            threshold_guard = adaptive_threshold + 0.05
-            if base_score <= threshold_guard:
-                logger.info(
-                    "Regime score {regime_score:.3f} too weak for confidence {confidence:.3f} (needs > {threshold:.3f}) - skipping trade",
-                    regime_score=regime_score,
-                    confidence=base_score,
-                    threshold=threshold_guard,
-                )
-                return None
+            logger.info(
+                "Low regime score {regime_score:.3f} (confidence={confidence:.3f}) - proceeding anyway (aggressive mode)",
+                regime_score=regime_score,
+                confidence=base_score,
+            )
 
         size_scale = float(pred.get("size_scale", 1.0))
         regime_size_multiplier = float(pred.get("regime_size_multiplier", 1.0))
         position_size_multiplier = max(0.25, min(2.0, size_scale * regime_size_multiplier))
-
-        return TradeSignal(
+        signal = TradeSignal(
             pair=pair,
             side=side,
             entry_price=entry_price,
@@ -725,12 +799,37 @@ class DecisionEngine:
                 "ppo_weight": self.ppo_weight,
             },
             risk_per_trade=self.risk_per_trade,
+            signal_score=signal_score,
+            momentum_factor=self._bounded(pred.get("momentum_factor", 0.5)),
+            volatility_factor=self._bounded(pred.get("volatility_factor", 0.5)),
+            trend_factor=self._bounded(pred.get("trend_factor", 0.5)),
+            mean_reversion_factor=self._bounded(pred.get("mean_reversion_factor", 0.5)),
+            volume_factor=self._bounded(pred.get("volume_factor", 0.5)),
+            volume_imbalance=float(pred.get("volume_imbalance", 0.0) or 0.0),
+            decision_label=direction,
         )
+        self._record_signal_record(
+            pair=pair,
+            signal_score=signal.signal_score,
+            decision=direction,
+            side=side,
+            prediction=pred,
+            reason="signal_ready",
+        )
+        return signal
 
     def _is_tft_fallback_mode(self) -> bool:
-        if self._tft_disable_flag_path.exists():
+        """Return True if we should use XGB fallback instead of TFT.
+        This is True when: model is not loaded, or TFT_FORCE_DISABLE is set."""
+        if self.predictor.model is None:
             if not self._tft_disable_warned:
-                logger.warning("TFT disabled flag detected; using xgb_meta_fallback mode only.")
+                logger.warning("No TFT model loaded; using xgb_meta_fallback mode.")
+                self._tft_disable_warned = True
+            return True
+        force_disable = os.getenv("TFT_FORCE_DISABLE", "").strip().lower() in ("true", "1", "yes")
+        if force_disable:
+            if not self._tft_disable_warned:
+                logger.warning("TFT_FORCE_DISABLE set; using xgb_meta_fallback mode.")
                 self._tft_disable_warned = True
             return True
         return False
@@ -783,6 +882,159 @@ class DecisionEngine:
         for reason in eval.reasons:
             lines.append(f"  • {reason}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _safe_div(numerator: float, denominator: float, default: float = 0.0) -> float:
+        if abs(float(denominator)) < 1e-12:
+            return float(default)
+        return float(numerator) / float(denominator)
+
+    @staticmethod
+    def _bounded(value: Any, low: float = 0.0, high: float = 1.0, default: float = 0.5) -> float:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return float(default)
+        if not np.isfinite(numeric):
+            return float(default)
+        return float(max(low, min(high, numeric)))
+
+    def _compute_multifactor_components(
+        self,
+        pair: str,
+        latest_15m_row: pd.Series,
+        df_15m: pd.DataFrame,
+    ) -> Dict[str, float]:
+        """
+        Compute short-horizon multi-factor signal components.
+        Uses 1m/5m/15m OHLCV and order-book depth imbalance.
+        """
+        now = datetime.utcnow()
+        try:
+            df_1m = self.fetcher.fetch_klines(
+                pair,
+                "1min",
+                start_dt=now - timedelta(hours=6),
+            )
+        except Exception:
+            df_1m = pd.DataFrame()
+
+        try:
+            df_5m = self.fetcher.fetch_klines(
+                pair,
+                "5min",
+                start_dt=now - timedelta(hours=24),
+            )
+        except Exception:
+            df_5m = pd.DataFrame()
+
+        base_df_1m = df_1m if not df_1m.empty else df_15m
+        base_df_5m = df_5m if not df_5m.empty else df_15m
+
+        c1 = pd.to_numeric(base_df_1m.get("close", pd.Series(dtype=float)), errors="coerce")
+        c5 = pd.to_numeric(base_df_5m.get("close", pd.Series(dtype=float)), errors="coerce")
+        v5 = pd.to_numeric(base_df_5m.get("volume", pd.Series(dtype=float)), errors="coerce")
+
+        recent_returns = c1.pct_change().dropna().tail(8)
+        momentum_raw = float(recent_returns.sum()) if not recent_returns.empty else 0.0
+        momentum_factor = self._bounded(0.5 + momentum_raw * 25.0)
+
+        vol_est = float(recent_returns.std()) if len(recent_returns) >= 2 else 0.0
+        target_vol = 0.0025
+        volatility_factor = self._bounded(1.0 - abs(vol_est - target_vol) / max(target_vol, 1e-9))
+
+        if len(c5.dropna()) >= 25:
+            ema_fast = float(c5.ewm(span=9, adjust=False).mean().iloc[-1])
+            ema_slow = float(c5.ewm(span=21, adjust=False).mean().iloc[-1])
+            trend_delta = self._safe_div(ema_fast - ema_slow, max(abs(ema_slow), 1e-12))
+            trend_factor = self._bounded(0.5 + trend_delta * 40.0)
+        else:
+            trend_factor = self._bounded(float(latest_15m_row.get("regime_score", 0.5)))
+
+        if len(c1.dropna()) >= 20:
+            rolling_mean = c1.rolling(20).mean().iloc[-1]
+            rolling_std = c1.rolling(20).std().iloc[-1]
+            z_score = self._safe_div(float(c1.iloc[-1] - rolling_mean), float(rolling_std), default=0.0)
+            mean_reversion_factor = self._bounded(0.5 - z_score * 0.15)
+        else:
+            mean_reversion_factor = 0.5
+
+        if len(v5.dropna()) >= 20:
+            vol_ratio = self._safe_div(float(v5.iloc[-1]), float(v5.tail(20).mean()), default=1.0)
+            volume_factor = self._bounded(0.5 + (vol_ratio - 1.0) * 0.30)
+        else:
+            volume_factor = self._bounded(float(latest_15m_row.get("volume_ratio", 1.0)) * 0.5)
+
+        imbalance = 0.0
+        try:
+            orderbook = self.fetcher.get_orderbook(pair, depth=20)
+            bid_volume = float(sum(float(level[1]) for level in orderbook.get("bids", []) if len(level) >= 2))
+            ask_volume = float(sum(float(level[1]) for level in orderbook.get("asks", []) if len(level) >= 2))
+            imbalance = self._safe_div(bid_volume - ask_volume, bid_volume + ask_volume, default=0.0)
+            imbalance = max(-1.0, min(1.0, float(imbalance)))
+        except Exception:
+            imbalance = 0.0
+
+        weighted = (
+            momentum_factor * self._factor_weights["momentum"]
+            + volatility_factor * self._factor_weights["volatility"]
+            + trend_factor * self._factor_weights["trend"]
+            + mean_reversion_factor * self._factor_weights["mean_reversion"]
+            + volume_factor * self._factor_weights["volume"]
+        )
+        signal_score = self._bounded(weighted + imbalance * 0.10)
+        return {
+            "signal_score": float(signal_score),
+            "momentum_factor": float(momentum_factor),
+            "volatility_factor": float(volatility_factor),
+            "trend_factor": float(trend_factor),
+            "mean_reversion_factor": float(mean_reversion_factor),
+            "volume_factor": float(volume_factor),
+            "volume_imbalance": float(imbalance),
+        }
+
+    def _record_signal_record(
+        self,
+        *,
+        pair: str,
+        signal_score: float,
+        decision: str,
+        side: str,
+        prediction: Dict[str, Any],
+        reason: str,
+    ) -> None:
+        session = get_session()
+        try:
+            model_conf = prediction.get("meta_probability", prediction.get("confidence", 0.0))
+            record = SignalRecord(
+                timestamp=datetime.utcnow(),
+                pair=pair,
+                timeframe="1min",
+                decision=str(decision).upper(),
+                side=str(side).upper(),
+                signal_score=self._bounded(signal_score),
+                momentum_factor=self._bounded(prediction.get("momentum_factor", 0.5)),
+                volatility_factor=self._bounded(prediction.get("volatility_factor", 0.5)),
+                trend_factor=self._bounded(prediction.get("trend_factor", 0.5)),
+                mean_reversion_factor=self._bounded(prediction.get("mean_reversion_factor", 0.5)),
+                volume_factor=self._bounded(prediction.get("volume_factor", 0.5)),
+                volume_imbalance=max(-1.0, min(1.0, float(prediction.get("volume_imbalance", 0.0) or 0.0))),
+                model_confidence=self._bounded(model_conf),
+                regime=str(prediction.get("regime_info", {}).get("trend", "unknown")),
+                payload={
+                    "reason": reason,
+                    "prob_up": float(prediction.get("prob_up", 0.0) or 0.0),
+                    "prob_down": float(prediction.get("prob_down", 0.0) or 0.0),
+                    "adaptive_threshold": float(prediction.get("adaptive_threshold", 0.0) or 0.0),
+                },
+            )
+            session.add(record)
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            logger.debug(f"Signal record persistence skipped for {pair}: {exc}")
+        finally:
+            session.close()
 
     def _get_performance_metrics(self, lookback: int = 100) -> Dict[str, float]:
         """

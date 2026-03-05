@@ -645,19 +645,25 @@ class TestSafetyManager:
         """Kill switch should block all trading."""
         from engine.safety import SafetyManager
         sm = SafetyManager()
-        sm._killed = True
-        can, reason = sm.can_trade()
-        assert not can
-        assert "kill" in reason.lower()
+        sm._save_state("killed", True)
+        try:
+            can, reason = sm.can_trade()
+            assert not can
+            assert "kill" in reason.lower()
+        finally:
+            sm._save_state("killed", False)
 
     def test_pause_blocks_trading(self):
         """Paused state should block trading."""
         from engine.safety import SafetyManager
         sm = SafetyManager()
-        sm._paused = True
-        can, reason = sm.can_trade()
-        assert not can
-        assert "paused" in reason.lower()
+        sm._save_state("paused", True)
+        try:
+            can, reason = sm.can_trade()
+            assert not can
+            assert "paused" in reason.lower()
+        finally:
+            sm._save_state("paused", False)
 
     def test_consecutive_losses_blocks_trading(self, patch_db):
         """Too many consecutive losses should block trading."""
@@ -829,6 +835,11 @@ class TestAPIServer:
         assert "engine_running" in data
         assert "paused" in data
         assert "killed" in data
+        assert "market_data_source" in data
+        assert "ticker_source" in data
+        assert "orderbook_source" in data
+        assert "synthetic_active" in data
+        assert "accept_new_trades" in data
 
     def test_trades_endpoint_empty(self, api_client_and_db):
         """GET /api/trades should return empty list initially."""
@@ -872,6 +883,95 @@ class TestAPIServer:
         assert "total_trades" in data
         assert "win_rate" in data
         assert "total_pnl" in data
+
+    def test_positions_endpoint(self, api_client_and_db, monkeypatch):
+        """GET /api/positions should return stable numeric schema."""
+        api_client, _ = api_client_and_db
+        monkeypatch.setattr(
+            "dashboard.api.load_paper_snapshot",
+            lambda: {
+                "positions": {
+                    "ETH-USDT": {
+                        "quantity": 0.5,
+                        "avg_entry_price": 2100.0,
+                    }
+                }
+            },
+        )
+        monkeypatch.setattr(
+            "dashboard.api.KuCoinDataFetcher.get_ticker",
+            lambda _self, _symbol: {"price": 2110.0},
+        )
+        response = api_client.get("/api/positions")
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data, list)
+        assert len(data) == 1
+        row = data[0]
+        for key in ["quantity", "entry_price", "avg_entry_price", "mark_price", "unrealized_pnl"]:
+            assert key in row
+            assert row[key] is not None
+            assert math.isfinite(float(row[key]))
+
+    def test_performance_endpoint_numeric_defaults(self, api_client_and_db):
+        """GET /api/performance should return numeric fields with non-null defaults."""
+        api_client, _ = api_client_and_db
+        response = api_client.get("/api/performance")
+        assert response.status_code == 200
+        data = response.json()
+        for key in [
+            "equity",
+            "balance",
+            "realized_pnl",
+            "unrealized_pnl",
+            "daily_pnl",
+            "win_rate",
+            "total_trades",
+            "open_positions",
+            "threshold_after_scaling",
+        ]:
+            assert key in data
+            assert data[key] is not None
+
+    def test_metrics_endpoint_numeric_defaults(self, api_client_and_db):
+        """GET /api/metrics should always return numeric payload without None fields."""
+        api_client, _ = api_client_and_db
+        response = api_client.get("/api/metrics")
+        assert response.status_code == 200
+        data = response.json()
+        for key in [
+            "sharpe_ratio",
+            "sortino_ratio",
+            "max_drawdown",
+            "win_rate",
+            "profit_factor",
+            "average_trade",
+            "exposure_pct",
+            "rolling_volatility",
+            "total_trades",
+        ]:
+            assert key in data
+            assert data[key] is not None
+
+    def test_equity_endpoint_payload(self, api_client_and_db):
+        """GET /api/equity should return list payload with numeric defaults."""
+        api_client, _ = api_client_and_db
+        response = api_client.get("/api/equity")
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data, list)
+        assert len(data) >= 1
+        row = data[0]
+        for key in ["equity", "balance", "realized_pnl", "unrealized_pnl", "open_positions", "exposure"]:
+            assert key in row
+            assert row[key] is not None
+
+    def test_compatibility_routes(self, api_client_and_db):
+        """Legacy non-/api routes should map to the same handlers."""
+        api_client, _ = api_client_and_db
+        for endpoint in ["/status", "/trades", "/positions", "/performance", "/metrics", "/equity"]:
+            response = api_client.get(endpoint)
+            assert response.status_code == 200
 
     def test_control_pause(self, api_client_and_db):
         """POST /api/control with pause should update state."""

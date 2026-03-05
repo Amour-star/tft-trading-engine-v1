@@ -32,6 +32,47 @@ tft-trading-engine/
 - **Safety Layer**: Circuit breakers, max loss limits, API key encryption
 - **Backtesting**: Walk-forward validation, Monte Carlo simulation, slippage modeling
 
+## Quant Multi-Asset Engine (New)
+
+The repository now includes a hedge-fund style asynchronous engine under `quant/` with:
+
+- Market Data Engine (`10s`): OHLCV (`1m/5m/15m`), orderbook depth, imbalance, funding proxy, volatility
+- Feature Engineering Engine: momentum, volatility, trend, orderflow, volume spikes, VWAP deviation with normalization
+- Market Regime AI: dynamic regime classification (`Trending`, `Mean Reverting`, `High Volatility`, `Low Volatility`)
+- Auto Strategy Discovery: parameter generation + quick backtests + ranking + activation
+- Strategy Engine: momentum breakout, mean reversion, volatility breakout, orderflow imbalance
+- Reinforcement Learning Trader: Q-learning based entry/exit/sizing policy
+- Portfolio Optimizer: dynamic cross-asset allocation targeting risk-adjusted returns
+- Risk Manager: daily loss, drawdown, exposure and simultaneous trade guards
+- Execution Engine: paper execution with slippage, fees, partial fills, trailing stops and scaling
+- Performance Analytics: live Sharpe, Sortino, Drawdown, Profit Factor, Win Rate, Equity/Volatility snapshots
+
+### Run Quant Engine
+
+```bash
+python scripts/run_quant_engine.py
+```
+
+### Quant Full Validation
+
+```bash
+python scripts/full_quant_system_check.py
+```
+
+### Quant Docker Services
+
+```bash
+docker compose up -d quant-engine quant-api quant-dashboard redis database
+```
+
+Important environment variables:
+
+- `QUANT_ENGINE_ENABLED=true`
+- `UNIVERSE=BTC-USDT,ETH-USDT,SOL-USDT,BNB-USDT,DOGE-USDT,XRP-USDT,AVAX-USDT`
+- `ENGINE_MARKET_INTERVAL_SECONDS=10`
+- `ENGINE_SIGNAL_INTERVAL_SECONDS=60`
+- `ENGINE_REBALANCE_INTERVAL_SECONDS=300`
+
 ## Runtime Requirements
 
 - Python 3.11.x (recommended)
@@ -132,3 +173,20 @@ Key settings:
 - **Dashboard:** The Engine Controls sidebar now exposes a `Reset Paper Account` button, acknowledgement checkbox, and balance input to trigger the API via JavaScript. On success it shows a toast and refreshes the widgets.
 
 Set `PAPER_INITIAL_BALANCE` (defaults to 10 000) to change the reset target across the CLI, engine, and dashboard input. Keep `ADMIN_TOKEN` synchronized between `.env`, Docker Compose, and any automation to call the admin endpoint safely.
+
+## Full DB Reset (Multi-Engine)
+
+- **Dry run:** `python scripts/reset_db.py --symbols btc,eth,xrp,doge --include-paper`
+- **Apply + archive:** `python scripts/reset_db.py --symbols btc,eth,xrp,doge --include-paper --archive --apply`
+
+This clears trades/positions/metrics/equity/engine-state tables inside each `state/<symbol>/tft_engine.db`, optionally resets each `paper_trading.db`, and can archive DB files before deletion.
+
+## Smoke E2E Validation
+
+- `python scripts/smoke_e2e.py --wait-trade-timeout 300`
+
+The smoke test validates:
+- `/status`, `/trades`, `/positions`, `/metrics`, `/equity`, `/performance` payload stability.
+- No `None`/NaN in key numeric fields.
+- Market-data source flags (`real` / `public_ticker` / `synthetic`).
+- Dashboard health endpoint (`/_stcore/health`).

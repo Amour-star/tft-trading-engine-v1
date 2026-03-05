@@ -23,6 +23,12 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _display_or_na(value: float, available: bool, precision: int = 4) -> str:
+    if not available:
+        return "N/A"
+    return f"{_safe_float(value, 0.0):.{precision}f}"
+
+
 class PerformanceTracker:
     """Computes institutional performance metrics per symbol."""
 
@@ -59,20 +65,34 @@ class PerformanceTracker:
             expectancy = (win_rate * avg_win) + ((1 - win_rate) * avg_loss)
 
             # Profit Factor = gross_wins / abs(gross_losses)
+            min_trades_for_ratios = max(2, int(getattr(settings.trading, "metrics_min_trades", 20)))
             gross_wins = sum(wins)
             gross_losses = abs(sum(losses))
-            profit_factor = gross_wins / gross_losses if gross_losses > 0 else max(gross_wins, 0.0)
+            profit_factor = 0.0
+            profit_factor_available = False
+            if total_trades >= min_trades_for_ratios and gross_losses > 1e-9:
+                candidate_pf = gross_wins / gross_losses
+                if math.isfinite(candidate_pf) and candidate_pf <= 100.0:
+                    profit_factor = candidate_pf
+                    profit_factor_available = True
 
-            min_trades_for_ratios = max(2, int(getattr(settings.trading, "metrics_min_trades", 20)))
             mean_ret = float(np.mean(pnl_pcts)) if pnl_pcts else 0.0
             std_ret = float(np.std(pnl_pcts, ddof=1)) if len(pnl_pcts) >= 2 else 0.0
             sharpe = 0.0
             sortino = 0.0
-            if total_trades >= min_trades_for_ratios and len(pnl_pcts) >= 2 and std_ret > 1e-12:
+            ratios_available = total_trades >= min_trades_for_ratios and len(pnl_pcts) >= 2
+            if ratios_available and std_ret > 1e-6:
                 sharpe = mean_ret / std_ret * math.sqrt(96)
                 negative_returns = [r for r in pnl_pcts if r < 0]
                 downside_std = float(np.std(negative_returns, ddof=1)) if len(negative_returns) >= 2 else 0.0
-                sortino = (mean_ret / downside_std * math.sqrt(96)) if downside_std > 1e-12 else 0.0
+                sortino = (mean_ret / downside_std * math.sqrt(96)) if downside_std > 1e-6 else 0.0
+            if not math.isfinite(sharpe) or abs(sharpe) > 50.0:
+                sharpe = 0.0
+                ratios_available = False
+            if not math.isfinite(sortino) or abs(sortino) > 50.0:
+                sortino = 0.0
+                ratios_available = False
+            win_rate_available = total_trades >= min_trades_for_ratios
 
             rolling_returns = pnl_pcts[-max(20, min_trades_for_ratios):]
             rolling_volatility = (
@@ -110,10 +130,13 @@ class PerformanceTracker:
             lifetime = {
                 "trades": int(total_trades),
                 "win_rate": round(win_rate, 4),
+                "win_rate_display": _display_or_na(win_rate, win_rate_available, precision=4),
                 "total_pnl": round(sum(pnls), 4),
                 "average_trade": round(float(np.mean(pnls)) if pnls else 0.0, 4),
                 "sharpe": round(sharpe, 4),
+                "sharpe_display": _display_or_na(sharpe, ratios_available, precision=4),
                 "sortino": round(sortino, 4),
+                "sortino_display": _display_or_na(sortino, ratios_available, precision=4),
                 "max_drawdown": round(max_dd, 4),
             }
 
@@ -121,13 +144,17 @@ class PerformanceTracker:
                 "symbol": self.symbol,
                 "total_trades": total_trades,
                 "win_rate": round(win_rate, 4),
+                "win_rate_display": _display_or_na(win_rate, win_rate_available, precision=4),
                 "avg_win": round(avg_win, 4),
                 "avg_loss": round(avg_loss, 4),
                 "average_trade": round(float(np.mean(pnls)) if pnls else 0.0, 4),
                 "expectancy": round(expectancy, 4),
                 "profit_factor": round(profit_factor, 4),
+                "profit_factor_display": _display_or_na(profit_factor, profit_factor_available, precision=4),
                 "sharpe_ratio": round(sharpe, 4),
+                "sharpe_ratio_display": _display_or_na(sharpe, ratios_available, precision=4),
                 "sortino_ratio": round(sortino, 4),
+                "sortino_ratio_display": _display_or_na(sortino, ratios_available, precision=4),
                 "max_drawdown": round(max_dd, 4),
                 "equity_curve": equity_curve[-20:],  # Last 20 points
                 "exposure_pct": round(exposure_pct, 2),
@@ -136,6 +163,7 @@ class PerformanceTracker:
                 "total_pnl": round(sum(pnls), 4),
                 "win_count": win_count,
                 "loss_count": loss_count,
+                "metrics_ready": bool(ratios_available),
                 "lifetime": lifetime,
                 "last_1h": window_1h,
                 "last_24h": window_24h,
@@ -199,10 +227,14 @@ class PerformanceTracker:
             return {
                 "trades": 0,
                 "win_rate": 0.0,
+                "win_rate_display": "N/A",
                 "total_pnl": 0.0,
                 "average_trade": 0.0,
                 "sharpe": 0.0,
+                "sharpe_display": "N/A",
                 "sortino": 0.0,
+                "sortino_display": "N/A",
+                "metrics_ready": False,
             }
 
         pnls = [_safe_float(trade.pnl, 0.0) for trade in window_rows]
@@ -213,23 +245,35 @@ class PerformanceTracker:
         min_window_trades = max(2, int(getattr(settings.trading, "metrics_min_window_trades", 5)))
         sharpe = 0.0
         sortino = 0.0
-        if trade_count >= min_window_trades and len(returns) >= 2:
+        ratios_available = trade_count >= min_window_trades and len(returns) >= 2
+        if ratios_available:
             mean_ret = float(np.mean(returns))
             std_ret = float(np.std(returns, ddof=1))
-            if std_ret > 1e-12:
+            if std_ret > 1e-6:
                 sharpe = mean_ret / std_ret * math.sqrt(96)
             negatives = [r for r in returns if r < 0]
             downside = float(np.std(negatives, ddof=1)) if len(negatives) >= 2 else 0.0
-            if downside > 1e-12:
+            if downside > 1e-6:
                 sortino = mean_ret / downside * math.sqrt(96)
+        if not math.isfinite(sharpe) or abs(sharpe) > 50.0:
+            sharpe = 0.0
+            ratios_available = False
+        if not math.isfinite(sortino) or abs(sortino) > 50.0:
+            sortino = 0.0
+            ratios_available = False
+        win_rate_available = trade_count >= min_window_trades
 
         return {
             "trades": int(trade_count),
             "win_rate": round(win_rate, 4),
+            "win_rate_display": _display_or_na(win_rate, win_rate_available, precision=4),
             "total_pnl": round(sum(pnls), 4),
             "average_trade": round(float(np.mean(pnls)) if pnls else 0.0, 4),
             "sharpe": round(sharpe, 4),
+            "sharpe_display": _display_or_na(sharpe, ratios_available, precision=4),
             "sortino": round(sortino, 4),
+            "sortino_display": _display_or_na(sortino, ratios_available, precision=4),
+            "metrics_ready": bool(ratios_available),
         }
 
     def _empty_metrics(self) -> Dict[str, Any]:
@@ -237,13 +281,17 @@ class PerformanceTracker:
             "symbol": self.symbol,
             "total_trades": 0,
             "win_rate": 0.0,
+            "win_rate_display": "N/A",
             "avg_win": 0.0,
             "avg_loss": 0.0,
             "average_trade": 0.0,
             "expectancy": 0.0,
             "profit_factor": 0.0,
+            "profit_factor_display": "N/A",
             "sharpe_ratio": 0.0,
+            "sharpe_ratio_display": "N/A",
             "sortino_ratio": 0.0,
+            "sortino_ratio_display": "N/A",
             "max_drawdown": 0.0,
             "equity_curve": [settings.trading.paper_starting_balance],
             "exposure_pct": 0.0,
@@ -252,30 +300,42 @@ class PerformanceTracker:
             "total_pnl": 0.0,
             "win_count": 0,
             "loss_count": 0,
+            "metrics_ready": False,
             "lifetime": {
                 "trades": 0,
                 "win_rate": 0.0,
+                "win_rate_display": "N/A",
                 "total_pnl": 0.0,
                 "average_trade": 0.0,
                 "sharpe": 0.0,
+                "sharpe_display": "N/A",
                 "sortino": 0.0,
+                "sortino_display": "N/A",
                 "max_drawdown": 0.0,
             },
             "last_1h": {
                 "trades": 0,
                 "win_rate": 0.0,
+                "win_rate_display": "N/A",
                 "total_pnl": 0.0,
                 "average_trade": 0.0,
                 "sharpe": 0.0,
+                "sharpe_display": "N/A",
                 "sortino": 0.0,
+                "sortino_display": "N/A",
+                "metrics_ready": False,
             },
             "last_24h": {
                 "trades": 0,
                 "win_rate": 0.0,
+                "win_rate_display": "N/A",
                 "total_pnl": 0.0,
                 "average_trade": 0.0,
                 "sharpe": 0.0,
+                "sharpe_display": "N/A",
                 "sortino": 0.0,
+                "sortino_display": "N/A",
+                "metrics_ready": False,
             },
             "timestamp": datetime.utcnow().isoformat(),
         }
@@ -309,11 +369,15 @@ class PortfolioMetrics:
                 return {
                     "per_symbol": per_symbol,
                     "portfolio_sharpe": 0.0,
+                    "portfolio_sharpe_display": "N/A",
                     "portfolio_sortino": 0.0,
+                    "portfolio_sortino_display": "N/A",
                     "portfolio_win_rate": 0.0,
+                    "portfolio_win_rate_display": "N/A",
                     "rolling_volatility": 0.0,
                     "risk_adjusted_return": 0.0,
                     "total_portfolio_pnl": 0.0,
+                    "metrics_ready": False,
                     "last_1h": {"trades": 0, "total_pnl": 0.0, "win_rate": 0.0},
                     "last_24h": {"trades": 0, "total_pnl": 0.0, "win_rate": 0.0},
                     "timestamp": datetime.utcnow().isoformat(),
@@ -332,13 +396,20 @@ class PortfolioMetrics:
             if len(portfolio_pnl_pcts) >= 2 and len(portfolio_pnl_pcts) >= min_trades_for_ratios:
                 mean_ret = float(np.mean(portfolio_pnl_pcts))
                 std_ret = float(np.std(portfolio_pnl_pcts, ddof=1))
-                portfolio_sharpe = (mean_ret / std_ret * math.sqrt(96)) if std_ret > 1e-12 else 0.0
+                portfolio_sharpe = (mean_ret / std_ret * math.sqrt(96)) if std_ret > 1e-6 else 0.0
                 negatives = [r for r in portfolio_pnl_pcts if r < 0]
                 downside = float(np.std(negatives, ddof=1)) if len(negatives) >= 2 else 0.0
-                portfolio_sortino = (mean_ret / downside * math.sqrt(96)) if downside > 1e-12 else 0.0
+                portfolio_sortino = (mean_ret / downside * math.sqrt(96)) if downside > 1e-6 else 0.0
             else:
                 portfolio_sharpe = 0.0
                 portfolio_sortino = 0.0
+            metrics_ready = len(portfolio_pnl_pcts) >= min_trades_for_ratios
+            if not math.isfinite(portfolio_sharpe) or abs(portfolio_sharpe) > 50.0:
+                portfolio_sharpe = 0.0
+                metrics_ready = False
+            if not math.isfinite(portfolio_sortino) or abs(portfolio_sortino) > 50.0:
+                portfolio_sortino = 0.0
+                metrics_ready = False
 
             # Rolling volatility (last 20 trades)
             recent_rets = portfolio_pnl_pcts[-20:]
@@ -364,11 +435,15 @@ class PortfolioMetrics:
             portfolio = {
                 "per_symbol": per_symbol,
                 "portfolio_sharpe": round(portfolio_sharpe, 4),
+                "portfolio_sharpe_display": _display_or_na(portfolio_sharpe, metrics_ready, precision=4),
                 "portfolio_sortino": round(portfolio_sortino, 4),
+                "portfolio_sortino_display": _display_or_na(portfolio_sortino, metrics_ready, precision=4),
                 "portfolio_win_rate": round(win_rate, 4),
+                "portfolio_win_rate_display": _display_or_na(win_rate, metrics_ready, precision=4),
                 "rolling_volatility": round(rolling_vol, 6),
                 "risk_adjusted_return": round(risk_adj_return, 4),
                 "total_portfolio_pnl": round(total_portfolio_pnl, 4),
+                "metrics_ready": bool(metrics_ready),
                 "last_1h": {
                     "trades": int(len(trades_1h)),
                     "total_pnl": round(sum(trades_1h), 4),

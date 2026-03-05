@@ -7,6 +7,7 @@ import os
 import random
 import sqlite3
 import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
@@ -154,6 +155,7 @@ class PaperExecutor(BaseExecutor):
         self._positions: Dict[str, Dict[str, Any]] = {}
         self.trade_history: List[Dict[str, Any]] = []
         self._last_prices: Dict[str, float] = {}
+        self._last_equity_invariant_warning_ts: float = 0.0
 
         self._init_db()
         self._load_state()
@@ -505,18 +507,25 @@ class PaperExecutor(BaseExecutor):
         cash_balance = self.get_balance()
         equity_mark_basis = cash_balance + net_position_value
         equity_pnl_basis = float(self._starting_balance) + float(self.get_realized_pnl()) + float(unrealized)
-        equity = float(equity_pnl_basis)
-        if abs(equity_mark_basis - equity_pnl_basis) > max(5.0, abs(self._starting_balance) * 0.02):
-            logger.bind(
-                event="PAPER_EQUITY_INVARIANT_MISMATCH",
-                db_path=str(self.db_path),
-                equity_mark_basis=float(equity_mark_basis),
-                equity_pnl_basis=float(equity_pnl_basis),
-                balance=float(cash_balance),
-                net_position_value=float(net_position_value),
-                realized_pnl=float(self.get_realized_pnl()),
-                unrealized_pnl=float(unrealized),
-            ).warning("PAPER_EQUITY_INVARIANT_MISMATCH")
+        # Mark-to-market equity is the source of truth for runtime risk/exposure snapshots.
+        equity = float(equity_mark_basis)
+        invariant_delta = abs(equity_mark_basis - equity_pnl_basis)
+        if invariant_delta > max(5.0, abs(self._starting_balance) * 0.02):
+            now_ts = time.time()
+            should_log = (now_ts - self._last_equity_invariant_warning_ts) >= 60.0
+            if should_log:
+                self._last_equity_invariant_warning_ts = now_ts
+                logger.bind(
+                    event="PAPER_EQUITY_INVARIANT_MISMATCH",
+                    db_path=str(self.db_path),
+                    equity_mark_basis=float(equity_mark_basis),
+                    equity_pnl_basis=float(equity_pnl_basis),
+                    balance=float(cash_balance),
+                    net_position_value=float(net_position_value),
+                    realized_pnl=float(self.get_realized_pnl()),
+                    unrealized_pnl=float(unrealized),
+                    invariant_delta=float(invariant_delta),
+                ).warning("PAPER_EQUITY_INVARIANT_MISMATCH")
         return {
             "mode": self.mode,
             "balance": cash_balance,
@@ -526,6 +535,8 @@ class PaperExecutor(BaseExecutor):
             "equity": equity,
             "equity_mark_basis": float(equity_mark_basis),
             "equity_pnl_basis": float(equity_pnl_basis),
+            "equity_basis": "mark_to_market",
+            "equity_invariant_delta": float(invariant_delta),
             "starting_balance": float(self._starting_balance),
             "positions": self.get_positions(),
             "trade_count": len(self.trade_history),

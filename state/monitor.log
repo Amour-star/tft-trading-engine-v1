@@ -104,3 +104,681 @@
 2026-03-05T00:31:16.836374Z | container_restarted | tft-trading-engine-engine-xrp-1
 2026-03-05T00:31:16.987289Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:Model load failed', 'No trades for > 6 hours']
 2026-03-05T00:31:20.472663Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T01:00:38.612509Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T01:00:41.514321Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T01:00:41.518149Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=2). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T01:01:12.352866Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T01:01:12.503116Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['No trades for > 6 hours']
+2026-03-05T01:01:15.554365Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T01:01:15.557865Z | repeated_failure_logged | eth: ['No trades for > 6 hours'] (failure_count=2). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T01:01:46.404136Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T01:01:46.563181Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T01:01:49.290893Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T01:01:49.295453Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=2). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T01:02:20.191444Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T01:02:20.364284Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T01:02:23.306552Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T01:02:23.310633Z | repeated_failure_logged | doge: ['log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=2). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T01:02:54.207086Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T01:30:38.637283Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T01:30:42.304198Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T01:30:42.307053Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=3). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T01:31:13.311021Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T01:31:13.477053Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T01:31:16.630315Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T01:31:16.632875Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=3). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T01:31:47.520969Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T01:31:47.721554Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T01:31:50.150687Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T01:31:50.155317Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=3). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T01:32:21.027731Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T01:32:21.207063Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T01:32:23.557597Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T01:32:23.561713Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=3). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T01:32:54.439181Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T02:00:38.670747Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T02:00:42.013872Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T02:00:42.017586Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=4). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T02:01:12.902265Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T02:01:13.070043Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T02:01:15.789241Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T02:01:15.799089Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=4). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T02:01:46.643264Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T02:01:46.865006Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T02:01:49.547079Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T02:01:49.549467Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=4). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T02:02:20.461138Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T02:02:20.659282Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T02:02:23.650046Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T02:02:23.652710Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=4). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T02:02:54.574469Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T02:30:38.635275Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T02:30:41.661337Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T02:30:41.665735Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=5). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T02:31:12.488905Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T02:31:12.665292Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T02:31:15.941678Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T02:31:15.949292Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=5). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T02:31:46.823182Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T02:31:47.056189Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T02:31:50.272879Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T02:31:50.276384Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=5). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T02:32:21.172425Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T02:32:21.375684Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T02:32:24.298252Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T02:32:24.302314Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=5). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T02:32:55.097593Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T03:00:38.685829Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T03:00:41.946003Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T03:00:41.951066Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=6). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T03:01:12.985471Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T03:01:13.192986Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T03:01:15.866157Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T03:01:15.869225Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=6). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T03:01:46.696776Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T03:01:46.955346Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T03:01:51.346879Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T03:01:51.351956Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=6). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T03:02:22.343423Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T03:02:22.575042Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T03:02:26.013642Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T03:02:26.016586Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=6). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T03:02:56.844488Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T03:30:38.695842Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T03:30:41.678651Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T03:30:41.681651Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=7). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T03:31:12.495921Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T03:31:12.708150Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T03:31:15.051715Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T03:31:15.054215Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=7). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T03:31:46.081497Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T03:31:46.343242Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T03:31:49.594489Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T03:31:49.598411Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=7). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T03:32:20.520033Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T03:32:20.763637Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T03:32:23.578954Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T03:32:23.581374Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=7). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T03:32:54.438860Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T04:00:38.809801Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T04:00:41.420868Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T04:00:41.423677Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=8). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T04:01:12.336428Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T04:01:12.561736Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T04:01:15.830634Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T04:01:15.833561Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=8). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T04:01:46.589516Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T04:01:46.894856Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T04:01:50.004817Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T04:01:50.008289Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=8). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T04:02:20.809741Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T04:02:21.057724Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T04:02:23.475975Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T04:02:23.478175Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=8). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T04:02:54.416890Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T04:30:38.710961Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T04:30:41.086865Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T04:30:41.103047Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=9). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T04:31:11.923539Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T04:31:12.153892Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T04:31:15.100745Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T04:31:15.103530Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=9). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T04:31:45.918945Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T04:31:46.217458Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T04:31:49.118099Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T04:31:49.120551Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=9). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T04:32:20.065589Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T04:32:20.354380Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T04:32:23.104967Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T04:32:23.107486Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=9). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T04:32:54.033749Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T05:00:38.815022Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T05:00:42.261925Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T05:00:42.265232Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=10). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T05:01:13.191685Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T05:01:13.418416Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T05:01:16.790408Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T05:01:16.793017Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=10). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T05:01:47.656247Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T05:01:47.962104Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T05:01:50.541944Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T05:01:50.546347Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=10). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T05:02:21.446752Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T05:02:21.747452Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T05:02:23.768868Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T05:02:23.772413Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=10). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T05:02:54.643135Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T05:30:38.865521Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T05:30:41.531232Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T05:30:41.535269Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=11). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T05:31:12.456758Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T05:31:12.698560Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T05:31:14.989303Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T05:31:14.992031Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=11). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T05:31:45.905071Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T05:31:46.235729Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T05:31:48.972366Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T05:31:48.975858Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=11). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T05:32:19.848888Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T05:32:20.177508Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T05:32:23.161323Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T05:32:23.164416Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=11). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T05:32:53.991377Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T06:00:38.831857Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T06:00:42.915768Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T06:00:42.922106Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=12). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T06:01:13.757643Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T06:01:14.019188Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T06:01:16.761781Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T06:01:16.766116Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=12). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T06:01:47.696317Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T06:01:48.059709Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T06:01:50.977355Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T06:01:50.980481Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=12). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T06:02:21.830991Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T06:02:22.144682Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T06:02:25.049988Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T06:02:25.053564Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=12). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T06:02:55.934390Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T06:30:38.891607Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T06:30:42.168183Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T06:30:42.172304Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=13). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T06:31:13.037377Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T06:31:13.310961Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T06:31:15.949229Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T06:31:15.952927Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=13). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T06:31:46.780066Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T06:31:47.196332Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T06:31:50.815863Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T06:31:50.819552Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=13). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T06:32:21.746123Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T06:32:22.112012Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T06:32:24.286931Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T06:32:24.291006Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=13). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T06:32:55.150619Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T07:00:38.894674Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T07:00:42.020631Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T07:00:42.024703Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=14). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T07:01:12.915878Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T07:01:13.218818Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T07:01:16.202729Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T07:01:16.205717Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=14). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T07:01:47.190574Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T07:01:47.642177Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T07:01:50.579048Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T07:01:50.581821Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=14). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T07:02:21.485702Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T07:02:21.924693Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T07:02:24.470653Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T07:02:24.472979Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=14). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T07:02:55.462751Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T07:30:38.903720Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T07:30:42.697981Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T07:30:42.700694Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=15). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T07:31:13.568227Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T07:31:13.860360Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T07:31:16.172203Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T07:31:16.177440Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=15). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T07:31:47.073025Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T07:31:47.558766Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T07:31:52.006487Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T07:31:52.010544Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=15). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T07:32:22.942337Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T07:32:23.357076Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T07:32:25.939990Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T07:32:25.943533Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=15). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T07:32:56.847900Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T08:00:38.990209Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T08:00:41.411814Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T08:00:41.414313Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=16). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T08:01:12.273144Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T08:01:12.545423Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T08:01:14.964616Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T08:01:14.966780Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=16). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T08:01:45.701191Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T08:01:46.154301Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T08:01:49.091232Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T08:01:49.098815Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=16). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T08:04:23.654660Z | monitor_started | Engine monitor initialized
+2026-03-05T08:04:23.730778Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T08:04:54.629854Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T08:04:54.695071Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T08:04:56.955265Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T08:04:57.015636Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T08:04:59.579255Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T08:04:59.646492Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T08:05:02.593293Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T08:34:23.823850Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T08:34:27.211511Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T08:34:27.215055Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=2). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T08:34:58.224704Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T08:34:58.317692Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T08:35:01.283531Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T08:35:01.286760Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=2). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T08:35:32.151887Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T08:35:32.280064Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T08:35:34.870540Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T08:35:34.873548Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=2). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T08:36:05.791414Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T08:36:05.929004Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T08:36:08.578777Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T08:36:08.582277Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=2). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T08:36:39.541526Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T09:04:23.856594Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T09:04:27.643101Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T09:04:27.645753Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=3). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T09:04:58.624663Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T09:04:58.739517Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T09:05:01.681687Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T09:05:01.685131Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=3). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T09:05:32.585390Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T09:05:32.735294Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T09:05:35.171058Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T09:05:35.174217Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=3). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T09:06:06.098971Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T09:06:06.245175Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T09:06:09.143701Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T09:06:09.147479Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=3). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T09:06:39.947706Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T09:34:23.818793Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T09:34:26.008141Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T09:34:26.017334Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=4). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T09:34:56.915494Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T09:34:57.047719Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T09:34:59.931379Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T09:34:59.934286Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=4). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T09:35:30.774775Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T09:35:30.961983Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T09:35:33.343672Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T09:35:33.347419Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=4). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T09:36:04.238206Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T09:36:04.395319Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T09:36:07.416918Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T09:36:07.420471Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=4). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T09:36:38.337427Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T10:04:23.899117Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T10:04:27.176728Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T10:04:27.180941Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=5). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T10:04:57.966825Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T10:04:58.111206Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T10:05:00.819719Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T10:05:00.822324Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=5). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T10:05:31.705053Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T10:05:31.904971Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T10:05:35.393105Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T10:05:35.396823Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=5). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T10:06:06.262626Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T10:06:06.455942Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T10:06:08.831568Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T10:06:08.834312Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=5). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T10:06:39.711029Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T10:34:23.840630Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T10:34:26.548121Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T10:34:26.551635Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=6). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T10:34:57.483375Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T10:34:57.619632Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T10:35:00.178135Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T10:35:00.181817Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=6). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T10:35:31.084894Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T10:35:31.302753Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T10:35:34.179650Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T10:35:34.182521Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=6). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T10:36:05.118871Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T10:36:05.320954Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T10:36:08.707571Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T10:36:08.710679Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=6). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T10:36:39.558030Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T11:04:23.932837Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T11:04:26.701719Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T11:04:26.704721Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=7). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T11:04:57.609154Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T11:04:57.762717Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T11:05:00.689138Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T11:05:00.691837Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=7). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T11:05:31.602363Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T11:05:31.845261Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T11:05:34.964859Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T11:05:34.968194Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=7). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T11:06:05.878323Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T11:06:06.086569Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T11:06:09.896789Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T11:06:09.905009Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=7). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T11:06:40.757356Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T11:34:23.972737Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T11:34:28.274078Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T11:34:28.277822Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=8). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T11:34:59.211252Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T11:34:59.372668Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T11:35:02.516633Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T11:35:02.522614Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=8). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T11:35:33.443350Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T11:35:33.693964Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T11:35:36.565893Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T11:35:36.569642Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=8). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T11:36:07.486690Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T11:36:07.723667Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T11:36:10.115883Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T11:36:10.118876Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=8). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T11:36:40.992343Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T12:04:23.963271Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T12:04:26.666963Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T12:04:26.672745Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=9). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T12:04:57.469486Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T12:04:57.649090Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T12:05:00.299757Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T12:05:00.302888Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=9). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T12:05:31.207314Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T12:05:31.473200Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T12:05:34.117827Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T12:05:34.120869Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=9). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T12:06:05.065450Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T12:06:05.319718Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T12:06:07.892691Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T12:06:07.895648Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=9). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T12:06:38.902518Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T12:34:23.994258Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T12:34:26.862617Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T12:34:26.866614Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=10). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T12:34:57.890583Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T12:34:58.073045Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T12:35:00.385441Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T12:35:00.388019Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=10). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T12:35:31.375215Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T12:35:31.704443Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T12:35:34.392709Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T12:35:34.395171Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=10). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T12:36:05.301798Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T12:36:05.585777Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T12:36:08.451289Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T12:36:08.454971Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=10). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T12:36:39.265644Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T13:04:24.011847Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T13:04:27.027529Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T13:04:27.030870Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=11). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T13:04:57.886243Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T13:04:58.076383Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T13:05:01.248550Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T13:05:01.251834Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=11). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T13:05:32.088058Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T13:05:32.403037Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T13:05:35.628213Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T13:05:35.631965Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=11). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T13:06:06.523535Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T13:06:06.850666Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T13:06:09.134406Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T13:06:09.137737Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=11). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T13:06:40.041957Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T13:34:24.050654Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T13:34:27.145957Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T13:34:27.150882Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=12). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T13:34:58.077152Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T13:34:58.297026Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T13:35:01.431759Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T13:35:01.437834Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=12). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T13:35:32.263590Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T13:35:32.600087Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T13:35:35.397313Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T13:35:35.402050Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=12). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T13:36:06.305703Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T13:36:06.651581Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T13:36:08.874114Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T13:36:08.878916Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=12). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T13:36:39.701125Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T14:04:24.079207Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T14:04:27.254028Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T14:04:27.259065Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=13). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T14:04:58.136026Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T14:04:58.465511Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T14:05:01.335856Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T14:05:01.339311Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=13). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T14:05:32.244931Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T14:05:32.597484Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T14:05:35.543286Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T14:05:35.546740Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=13). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T14:06:06.565496Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T14:06:06.899339Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T14:06:09.504570Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T14:06:09.509728Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=13). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T14:06:40.432879Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T14:34:24.077546Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T14:34:26.432108Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T14:34:26.435912Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=14). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T14:34:57.432101Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T14:34:57.674912Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T14:35:00.587235Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T14:35:00.590742Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=14). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T14:35:31.636111Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T14:35:32.059441Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T14:35:35.031987Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T14:35:35.034697Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=14). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T14:36:05.985830Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T14:36:06.371043Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T14:36:10.121961Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T14:36:10.125458Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=14). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T14:36:41.026695Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T15:04:24.035516Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T15:04:27.076831Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T15:04:27.079305Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=15). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T15:04:57.945473Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T15:04:58.183575Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T15:05:00.836381Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T15:05:00.840149Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=15). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T15:05:31.700045Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T15:05:32.114645Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T15:05:35.604317Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T15:05:35.608317Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=15). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T15:06:06.574925Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T15:06:06.958708Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T15:06:09.624585Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T15:06:09.628208Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=15). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T15:06:40.446381Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T15:34:24.113821Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T15:34:27.267100Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T15:34:27.272328Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=16). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T15:34:58.250734Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T15:34:58.507191Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T15:35:01.536123Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T15:35:01.538889Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=16). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T15:35:32.361048Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T15:35:32.783583Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T15:35:35.735986Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T15:35:35.740005Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=16). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T15:36:06.676907Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T15:36:07.045555Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T15:36:11.944760Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T15:36:11.947902Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=16). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T15:36:42.900281Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T16:04:24.164828Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T16:04:26.991854Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T16:04:26.994858Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=17). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T16:04:57.921230Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T16:04:58.182909Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T16:05:00.769392Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T16:05:00.771468Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=17). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T16:05:31.730262Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T16:05:32.183400Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T16:05:34.811094Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T16:05:34.816259Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=17). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T16:06:05.674635Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T16:06:06.075421Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T16:06:08.789279Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T16:06:08.792127Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=17). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T16:06:39.682255Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T16:34:24.153280Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T16:34:27.321252Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T16:34:27.323691Z | repeated_failure_logged | btc: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=18). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T16:34:58.208392Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T16:34:58.497050Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T16:35:01.654779Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T16:35:01.657926Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=18). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T16:35:32.573921Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T16:35:33.056759Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T16:35:36.590080Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T16:35:36.596889Z | repeated_failure_logged | xrp: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=18). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T16:36:07.417827Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T16:36:07.846044Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T16:36:09.930893Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T16:36:09.933971Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=18). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T16:36:40.819792Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T17:04:24.218934Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T17:04:26.727982Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T17:04:26.731298Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=19). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T17:04:57.628674Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T17:04:57.992780Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T17:05:00.741093Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T17:05:00.744889Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=19). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T17:05:31.607141Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T17:05:32.068670Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T17:05:34.940753Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T17:05:34.943569Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=19). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T17:06:05.728887Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T17:06:06.147411Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T17:06:08.930158Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T17:06:08.933961Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=19). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T17:06:39.870914Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T17:34:24.198684Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T17:34:27.739276Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T17:34:27.743655Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=20). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T17:34:58.642775Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T17:34:58.987425Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T17:35:01.342161Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T17:35:01.346880Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=20). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T17:35:32.241586Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T17:35:32.695149Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T17:35:35.687309Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T17:35:35.689561Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=20). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T17:36:06.711097Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T17:36:07.129514Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T17:36:09.294072Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T17:36:09.296946Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=20). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T17:36:40.254244Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T18:04:24.221112Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T18:04:27.465350Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T18:04:27.468895Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=21). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T18:04:58.376867Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T18:04:58.708381Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T18:05:01.131020Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T18:05:01.136289Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=21). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T18:05:31.992424Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T18:05:32.485149Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T18:05:35.378045Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T18:05:35.380836Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=21). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T18:06:06.224354Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T18:06:06.634452Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T18:06:09.571589Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T18:06:09.574239Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=21). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T18:06:40.462692Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T18:34:24.197057Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T18:34:26.597660Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T18:34:26.601680Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=22). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T18:34:57.503704Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T18:34:57.838935Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T18:35:00.984871Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T18:35:00.987968Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=22). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T18:35:31.877335Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T18:35:32.445005Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T18:35:35.268932Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T18:35:35.273955Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=22). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T18:36:06.138309Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T18:36:06.557372Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T18:36:09.348102Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T18:36:09.352385Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=22). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T18:36:40.263912Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T19:04:24.164001Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T19:04:26.429892Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T19:04:26.432543Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=23). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T19:04:57.305510Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T19:04:57.652096Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T19:05:00.314687Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T19:05:00.317504Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=23). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T19:05:31.242334Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T19:05:31.759554Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T19:05:33.956000Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T19:05:33.959751Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=23). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T19:06:04.822133Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T19:06:05.276199Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T19:06:07.766580Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T19:06:07.769949Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=23). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T19:06:38.733846Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T19:34:24.239280Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T19:34:27.324466Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T19:34:27.327533Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=24). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T19:34:58.324669Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T19:34:58.679809Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T19:35:01.586476Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T19:35:01.589249Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=24). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T19:35:32.579508Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T19:35:33.134920Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T19:35:35.906964Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T19:35:35.911150Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=24). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T19:36:06.785232Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T19:36:07.263799Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T19:36:10.188090Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T19:36:10.191087Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=24). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T19:36:41.094396Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T20:04:24.212326Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T20:04:27.523914Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T20:04:27.526815Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=25). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T20:04:58.510642Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T20:04:58.872325Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T20:05:01.947086Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T20:05:01.950500Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=25). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T20:05:32.802640Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T20:05:33.323662Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T20:05:36.266570Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T20:05:36.270217Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=25). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T20:06:07.133976Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T20:06:07.691755Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T20:06:09.827770Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T20:06:09.832187Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=25). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T20:06:40.746469Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T20:34:24.180245Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T20:34:26.964360Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T20:34:26.968670Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=26). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T20:34:57.957566Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T20:34:58.314002Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T20:35:01.470258Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T20:35:01.473312Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=26). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T20:35:32.375778Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T20:35:32.930266Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T20:35:36.020137Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T20:35:36.023170Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=26). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T20:36:07.005237Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T20:36:07.587117Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T20:36:10.491688Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T20:36:10.495057Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=26). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T20:36:41.415793Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T21:04:24.176770Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T21:04:27.050362Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T21:04:27.053679Z | repeated_failure_logged | btc: ['No trades for > 6 hours'] (failure_count=27). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T21:04:57.918301Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T21:04:58.273542Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T21:05:00.509376Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T21:05:00.512607Z | repeated_failure_logged | eth: ['log_match:CRITICAL', 'No trades for > 6 hours'] (failure_count=27). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T21:05:31.465174Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T21:05:32.011160Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T21:05:34.940790Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T21:05:34.943749Z | repeated_failure_logged | xrp: ['No trades for > 6 hours'] (failure_count=27). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T21:06:05.802342Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T21:06:06.331896Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T21:06:08.982267Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T21:06:08.985195Z | repeated_failure_logged | doge: ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours'] (failure_count=27). NOT writing tft_disabled.flag — engine manages its own fallback mode.
+2026-03-05T21:06:39.820695Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T21:13:12.899022Z | monitor_started | Engine monitor initialized
+2026-03-05T21:13:12.967557Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T21:13:43.713735Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T21:13:43.771701Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['log_match:CRITICAL', 'No trades for > 6 hours']
+2026-03-05T21:13:46.170804Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T21:13:46.241040Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T21:13:49.360904Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T21:13:49.426944Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:CRITICAL', 'log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T21:13:52.851623Z | container_restarted | tft-trading-engine-engine-doge-1
+2026-03-05T21:50:29.929382Z | monitor_started | Engine monitor initialized
+2026-03-05T21:50:29.996188Z | issues_detected | btc (tft-trading-engine-engine-btc-1): ['No trades for > 6 hours']
+2026-03-05T21:51:00.946757Z | container_restarted | tft-trading-engine-engine-btc-1
+2026-03-05T21:51:01.015321Z | issues_detected | eth (tft-trading-engine-engine-eth-1): ['No trades for > 6 hours']
+2026-03-05T21:51:03.975330Z | container_restarted | tft-trading-engine-engine-eth-1
+2026-03-05T21:51:04.082329Z | issues_detected | xrp (tft-trading-engine-engine-xrp-1): ['No trades for > 6 hours']
+2026-03-05T21:51:07.169453Z | container_restarted | tft-trading-engine-engine-xrp-1
+2026-03-05T21:51:07.255271Z | issues_detected | doge (tft-trading-engine-engine-doge-1): ['log_match:Model load failed', 'No trades for > 6 hours']
+2026-03-05T21:51:10.483653Z | container_restarted | tft-trading-engine-engine-doge-1

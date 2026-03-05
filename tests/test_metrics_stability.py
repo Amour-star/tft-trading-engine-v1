@@ -41,6 +41,11 @@ def test_sharpe_and_sortino_zero_on_small_sample(patch_db) -> None:
     assert metrics["total_trades"] == 2
     assert metrics["sharpe_ratio"] == 0.0
     assert metrics["sortino_ratio"] == 0.0
+    assert metrics["metrics_ready"] is False
+    assert metrics["sharpe_ratio_display"] == "N/A"
+    assert metrics["sortino_ratio_display"] == "N/A"
+    assert metrics["win_rate_display"] == "N/A"
+    assert metrics["profit_factor_display"] == "N/A"
 
 
 def test_metrics_include_window_payloads_with_numeric_defaults(patch_db) -> None:
@@ -59,4 +64,6 @@ def test_metrics_include_window_payloads_with_numeric_defaults(patch_db) -> None
         assert payload["win_rate"] is not None
         assert payload["total_pnl"] is not None
         assert payload["average_trade"] is not None
-
+        assert "win_rate_display" in payload
+        assert "sharpe_display" in payload
+        assert "sortino_display" in payload

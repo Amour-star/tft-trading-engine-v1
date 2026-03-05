@@ -5,6 +5,7 @@ Handles OHLCV retrieval, top pairs discovery, and real-time data fallbacks.
 from __future__ import annotations
 
 import os
+import random
 import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -14,6 +15,7 @@ import pandas as pd
 import requests
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
+from requests import exceptions as requests_exceptions
 
 from config.settings import ACTIVE_SYMBOL, XRP_ONLY_SYMBOL, settings
 
@@ -55,6 +57,9 @@ _FALLBACK_SYMBOL_INFO = {
     "quoteIncrement": "0.01",
 }
 
+_AUTH_ERROR_CODES = {"400001", "400002", "400003", "400004", "401", "401000"}
+_RATE_LIMIT_CODES = {"429000", "429001", "429002", "429"}
+
 
 def _as_float(value: Any, default: float = 0.0) -> float:
     try:
@@ -73,6 +78,40 @@ def _is_placeholder_secret(value: str) -> bool:
 def _offline_mode_enabled() -> bool:
     raw = os.getenv("KUCOIN_OFFLINE_MODE", "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def _normalize_error_message(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _is_auth_error(status_code: int, payload: Optional[Dict[str, Any]], message: str) -> bool:
+    normalized = _normalize_error_message(message)
+    code = _normalize_error_message((payload or {}).get("code"))
+    if status_code in {401, 403}:
+        return True
+    if code in _AUTH_ERROR_CODES:
+        return True
+    if "kc-api-key not exists" in normalized:
+        return True
+    if "invalid kc-api-key" in normalized:
+        return True
+    if "invalid api key" in normalized:
+        return True
+    if "api key" in normalized and "not exist" in normalized:
+        return True
+    if "signature" in normalized and "invalid" in normalized:
+        return True
+    return False
+
+
+def _is_rate_limited(status_code: int, payload: Optional[Dict[str, Any]], message: str) -> bool:
+    normalized = _normalize_error_message(message)
+    code = _normalize_error_message((payload or {}).get("code"))
+    if status_code == 429:
+        return True
+    if code in _RATE_LIMIT_CODES:
+        return True
+    return "rate limit" in normalized or "too many requests" in normalized
 
 
 def _parse_universe_from_env(default_symbol: str) -> List[str]:
@@ -109,6 +148,9 @@ class KuCoinDataFetcher:
         self._offline_mode = _offline_mode_enabled() or Market is None
         self._allow_synthetic_orderbook = bool(getattr(cfg, "allow_synthetic_orderbook", False))
         self._orderbook_retry_attempts = max(1, int(getattr(cfg, "orderbook_retry_attempts", 3)))
+        self._http_retry_attempts = max(1, int(getattr(cfg, "http_retry_attempts", 4)))
+        self._http_timeout_seconds = max(1.0, float(getattr(cfg, "http_timeout_seconds", 4.0)))
+        self._http_max_backoff_seconds = max(1.0, float(getattr(cfg, "http_max_backoff_seconds", 8.0)))
 
         self.market = None
         self.trade_client = None
@@ -276,18 +318,150 @@ class KuCoinDataFetcher:
             "source": "synthetic",
         }
 
+    def _cached_ticker(self, symbol: str) -> Optional[Dict[str, Any]]:
+        self._assert_xrp_symbol(symbol)
+        price = _as_float(self._last_prices.get(symbol), 0.0)
+        if price <= 0:
+            return None
+        spread = max(1e-8, price * 0.0005)
+        return {
+            "price": price,
+            "best_bid": max(1e-8, price - spread),
+            "best_ask": price + spread,
+            "size": 0.0,
+            "time": float(int(time.time() * 1000)),
+            "source": "last_known",
+        }
+
+    def _retry_backoff_seconds(self, attempt: int, retry_after: Optional[str] = None) -> float:
+        if retry_after:
+            try:
+                parsed = float(retry_after)
+                if parsed > 0:
+                    return min(parsed, self._http_max_backoff_seconds)
+            except Exception:
+                pass
+        base = min(0.5 * (2 ** max(0, attempt - 1)), self._http_max_backoff_seconds)
+        jitter = random.uniform(0.0, min(0.25, base * 0.3))
+        return min(base + jitter, self._http_max_backoff_seconds)
+
+    def _enable_public_only_mode(self, reason: str) -> None:
+        reason_text = str(reason or "unknown auth failure")
+        if not self._public_only_mode:
+            logger.warning("Switching KuCoin fetcher to public-only mode: {}", reason_text)
+        self._public_only_mode = True
+        self.trade_client = None
+        self.user_client = None
+        if self._credentials_present:
+            self._auth_valid = False
+            self._auth_error = reason_text
+
+    def _maybe_switch_public_mode_from_error(
+        self,
+        *,
+        status_code: int = 0,
+        payload: Optional[Dict[str, Any]] = None,
+        message: str = "",
+        exc: Optional[Exception] = None,
+    ) -> None:
+        text = message
+        if not text and exc is not None:
+            text = str(exc)
+        if _is_auth_error(status_code, payload, text):
+            self._enable_public_only_mode(text or f"HTTP {status_code}")
+
     def _public_get_json(
         self,
         url: str,
         params: Optional[Dict[str, Any]] = None,
         timeout_sec: float = 4.0,
     ) -> Dict[str, Any]:
-        response = requests.get(url, params=params, timeout=timeout_sec)
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, dict):
-            raise ValueError("Unexpected non-dict response")
-        return payload
+        timeout = max(0.5, float(timeout_sec or self._http_timeout_seconds))
+        last_error: Optional[Exception] = None
+
+        for attempt in range(1, self._http_retry_attempts + 1):
+            response = None
+            payload: Optional[Dict[str, Any]] = None
+            message = ""
+            try:
+                response = requests.get(url, params=params, timeout=timeout)
+                status_code = int(response.status_code)
+                try:
+                    parsed = response.json()
+                    if isinstance(parsed, dict):
+                        payload = parsed
+                        message = str(payload.get("msg", ""))
+                    else:
+                        message = response.text or ""
+                except Exception:
+                    payload = None
+                    message = response.text or ""
+
+                self._maybe_switch_public_mode_from_error(
+                    status_code=status_code,
+                    payload=payload,
+                    message=message,
+                )
+
+                if 200 <= status_code < 300:
+                    if payload is None:
+                        raise ValueError("Unexpected non-dict response")
+                    code = str(payload.get("code", "")).strip()
+                    if code and code not in {"200000", "200"}:
+                        if _is_rate_limited(status_code, payload, message) and attempt < self._http_retry_attempts:
+                            backoff = self._retry_backoff_seconds(
+                                attempt,
+                                retry_after=response.headers.get("Retry-After"),
+                            )
+                            time.sleep(backoff)
+                            continue
+                        raise RuntimeError(f"Unexpected KuCoin response code={code} msg={message}")
+                    return payload
+
+                should_retry = (
+                    _is_rate_limited(status_code, payload, message)
+                    or status_code >= 500
+                    or status_code == 408
+                )
+                if should_retry and attempt < self._http_retry_attempts:
+                    backoff = self._retry_backoff_seconds(
+                        attempt,
+                        retry_after=(response.headers.get("Retry-After") if response is not None else None),
+                    )
+                    time.sleep(backoff)
+                    continue
+
+                snippet = (message or "").strip()
+                if snippet:
+                    snippet = snippet[:200]
+                raise RuntimeError(f"HTTP {status_code} for {url}: {snippet or 'request failed'}")
+            except (requests_exceptions.Timeout, requests_exceptions.ConnectionError) as exc:
+                last_error = exc
+                if attempt < self._http_retry_attempts:
+                    backoff = self._retry_backoff_seconds(attempt)
+                    time.sleep(backoff)
+                    continue
+                break
+            except requests_exceptions.RequestException as exc:
+                last_error = exc
+                self._maybe_switch_public_mode_from_error(exc=exc)
+                if attempt < self._http_retry_attempts:
+                    backoff = self._retry_backoff_seconds(attempt)
+                    time.sleep(backoff)
+                    continue
+                break
+            except Exception as exc:
+                last_error = exc
+                self._maybe_switch_public_mode_from_error(exc=exc)
+                if _is_rate_limited(0, payload, message) and attempt < self._http_retry_attempts:
+                    backoff = self._retry_backoff_seconds(attempt)
+                    time.sleep(backoff)
+                    continue
+                break
+
+        if last_error is None:
+            raise RuntimeError(f"Failed to fetch JSON from {url}")
+        raise RuntimeError(f"Failed to fetch JSON from {url}: {last_error}") from last_error
 
     @staticmethod
     def _to_binance_symbol(symbol: str) -> str:
@@ -297,6 +471,7 @@ class KuCoinDataFetcher:
         payload = self._public_get_json(
             f"{settings.kucoin.base_url}/api/v1/market/orderbook/level1",
             params={"symbol": symbol},
+            timeout_sec=self._http_timeout_seconds,
         )
         data = payload.get("data", {}) if isinstance(payload, dict) else {}
         price = _as_float(data.get("price"), 0.0)
@@ -324,6 +499,7 @@ class KuCoinDataFetcher:
         payload = self._public_get_json(
             f"{settings.kucoin.base_url}/api/v1/market/orderbook/level2_{level}",
             params={"symbol": symbol},
+            timeout_sec=self._http_timeout_seconds,
         )
         data = payload.get("data", {}) if isinstance(payload, dict) else {}
         bids_raw = data.get("bids", []) if isinstance(data, dict) else []
@@ -419,7 +595,8 @@ class KuCoinDataFetcher:
             self._auth_valid = False if requires_auth else None
             self._auth_error = (
                 "KuCoin credentials missing. Configure KUCOIN_API_KEY/KUCOIN_API_SECRET/"
-                "KUCOIN_API_PASSPHRASE (or KUCOIN_KEY/KUCOIN_SECRET/KUCOIN_PASSPHRASE)."
+                "KUCOIN_API_PASSPHRASE (or KUCOIN_KEY/KUCOIN_SECRET/KUCOIN_PASSPHRASE, "
+                "or KC_API_KEY/KC_API_SECRET/KC_API_PASSPHRASE)."
             )
             self._public_only_mode = True
             self._refresh_status(ACTIVE_SYMBOL)
@@ -428,7 +605,7 @@ class KuCoinDataFetcher:
         if not auth_check_enabled or self.user_client is None:
             self._auth_valid = None
             self._auth_error = ""
-            self._public_only_mode = False
+            self._public_only_mode = self.user_client is None
             self._refresh_status(ACTIVE_SYMBOL)
             return self.get_market_data_status(ACTIVE_SYMBOL)
 
@@ -481,10 +658,12 @@ class KuCoinDataFetcher:
         book_payload = self._public_get_json(
             "https://api.binance.com/api/v3/ticker/bookTicker",
             params={"symbol": binance_symbol},
+            timeout_sec=self._http_timeout_seconds,
         )
         price_payload = self._public_get_json(
             "https://api.binance.com/api/v3/ticker/price",
             params={"symbol": binance_symbol},
+            timeout_sec=self._http_timeout_seconds,
         )
         price = _as_float(price_payload.get("price"), 0.0)
         best_bid = _as_float(book_payload.get("bidPrice"), price)
@@ -549,7 +728,7 @@ class KuCoinDataFetcher:
     def get_top_usdt_pairs(self, top_n: int = 30) -> List[Dict[str, Any]]:
         """Get top N USDT trading pairs by 24h volume."""
         n = max(1, int(top_n))
-        if self._offline_mode or self.market is None:
+        if self._offline_mode or self.market is None or self._public_only_mode:
             pairs = self._fallback_pairs(n)
             logger.info(
                 "Using offline fallback universe: {}",
@@ -575,13 +754,14 @@ class KuCoinDataFetcher:
                 return self._fallback_pairs(n)
             return ranked[:n]
         except Exception as exc:
+            self._maybe_switch_public_mode_from_error(exc=exc)
             logger.warning("Failed to fetch top USDT pairs from KuCoin, using fallback: {}", exc)
             return self._fallback_pairs(n)
 
     def get_symbol_info(self, symbol: str) -> Dict[str, Any]:
         """Get exchange filters: tick size, lot size, min order."""
         self._assert_xrp_symbol(symbol)
-        if self._offline_mode or self.market is None:
+        if self._offline_mode or self.market is None or self._public_only_mode:
             return self._fallback_symbol_info(symbol)
 
         try:
@@ -602,6 +782,7 @@ class KuCoinDataFetcher:
                         "fee_currency": s.get("feeCurrency", "USDT"),
                     }
         except Exception as exc:
+            self._maybe_switch_public_mode_from_error(exc=exc)
             logger.warning(f"Symbol info fallback for {symbol}: {exc}")
 
         return self._fallback_symbol_info(symbol)
@@ -615,7 +796,7 @@ class KuCoinDataFetcher:
         end_dt: Optional[datetime] = None,
     ) -> pd.DataFrame:
         """Fetch OHLCV klines for a symbol."""
-        if self._offline_mode or self.market is None:
+        if self._offline_mode or self.market is None or self._public_only_mode:
             try:
                 return self._fetch_klines_via_kucoin_rest(symbol, timeframe, start_dt, end_dt)
             except Exception as exc:
@@ -647,6 +828,7 @@ class KuCoinDataFetcher:
                 self._last_prices[symbol] = float(df["close"].iloc[-1])
             return df
         except Exception as exc:
+            self._maybe_switch_public_mode_from_error(exc=exc)
             logger.warning(f"fetch_klines failed for {symbol} {timeframe}, using synthetic data: {exc}")
             return self._generate_synthetic_klines(symbol, timeframe, start_dt, end_dt)
 
@@ -698,6 +880,7 @@ class KuCoinDataFetcher:
                 )
                 return orderbook
             except Exception as exc:
+                self._maybe_switch_public_mode_from_error(exc=exc)
                 failures.append(f"attempt={attempt}: {exc}")
                 if attempt < self._orderbook_retry_attempts:
                     backoff = min(0.5 * (2 ** (attempt - 1)), 5.0)
@@ -736,7 +919,7 @@ class KuCoinDataFetcher:
     def get_ticker(self, symbol: str) -> Dict[str, Any]:
         """Get current ticker data."""
         self._assert_xrp_symbol(symbol)
-        if self._offline_mode or self.market is None:
+        if self._offline_mode or self.market is None or self._public_only_mode:
             try:
                 ticker = self._fetch_ticker_via_kucoin_rest(symbol)
                 self._last_prices[symbol] = float(ticker["price"])
@@ -750,7 +933,11 @@ class KuCoinDataFetcher:
                     self._refresh_status(symbol, ticker_source=str(ticker.get("source", "binance_rest")))
                     return ticker
                 except Exception as binance_exc:
-                    logger.warning(f"Binance REST ticker failed for {symbol}, using synthetic ticker: {binance_exc}")
+                    logger.warning(f"Binance REST ticker failed for {symbol}, falling back to cached/synthetic ticker: {binance_exc}")
+                    cached = self._cached_ticker(symbol)
+                    if cached is not None:
+                        self._refresh_status(symbol, ticker_source="last_known")
+                        return cached
                     ticker = self._synthetic_ticker(symbol)
                     self._refresh_status(symbol, ticker_source="synthetic")
                     return ticker
@@ -810,6 +997,7 @@ class KuCoinDataFetcher:
             self._refresh_status(symbol, ticker_source="kucoin_sdk")
             return ticker
         except Exception as exc:
+            self._maybe_switch_public_mode_from_error(exc=exc)
             logger.warning(f"SDK ticker failed for {symbol}: {exc}")
             try:
                 ticker = self._fetch_ticker_via_kucoin_rest(symbol)
@@ -824,7 +1012,11 @@ class KuCoinDataFetcher:
                     self._refresh_status(symbol, ticker_source=str(ticker.get("source", "binance_rest")))
                     return ticker
                 except Exception as binance_exc:
-                    logger.warning(f"Binance REST ticker failed for {symbol}, using synthetic ticker: {binance_exc}")
+                    logger.warning(f"Binance REST ticker failed for {symbol}, falling back to cached/synthetic ticker: {binance_exc}")
+                    cached = self._cached_ticker(symbol)
+                    if cached is not None:
+                        self._refresh_status(symbol, ticker_source="last_known")
+                        return cached
                     ticker = self._synthetic_ticker(symbol)
                     self._refresh_status(symbol, ticker_source="synthetic")
                     return ticker

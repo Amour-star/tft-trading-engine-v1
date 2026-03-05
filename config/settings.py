@@ -85,11 +85,12 @@ def _resolve_trading_mode() -> str:
 @dataclass(frozen=True)
 class KuCoinConfig:
     # Support aliases used by kucoin-python and kucoin-universal-sdk deploys.
-    api_key: str = _env_first("KUCOIN_API_KEY", "KUCOIN_KEY", default="")
-    api_secret: str = _env_first("KUCOIN_API_SECRET", "KUCOIN_SECRET", default="")
+    api_key: str = _env_first("KUCOIN_API_KEY", "KUCOIN_KEY", "KC_API_KEY", default="")
+    api_secret: str = _env_first("KUCOIN_API_SECRET", "KUCOIN_SECRET", "KC_API_SECRET", default="")
     api_passphrase: str = _env_first(
         "KUCOIN_API_PASSPHRASE",
         "KUCOIN_PASSPHRASE",
+        "KC_API_PASSPHRASE",
         default="",
     )
     sandbox: bool = _env_bool("KUCOIN_SANDBOX", False)
@@ -97,6 +98,9 @@ class KuCoinConfig:
     auth_check_on_startup: bool = _env_bool("KUCOIN_AUTH_CHECK_ON_STARTUP", True)
     allow_synthetic_orderbook: bool = _env_bool("ALLOW_SYNTHETIC_ORDERBOOK", False)
     orderbook_retry_attempts: int = _env_int("ORDERBOOK_RETRY_ATTEMPTS", 3)
+    http_retry_attempts: int = _env_int("KUCOIN_HTTP_RETRY_ATTEMPTS", 4)
+    http_timeout_seconds: float = _env_float("KUCOIN_HTTP_TIMEOUT_SECONDS", 4.0)
+    http_max_backoff_seconds: float = _env_float("KUCOIN_HTTP_MAX_BACKOFF_SECONDS", 8.0)
 
     @property
     def base_url(self) -> str:

@@ -72,3 +72,48 @@ def test_startup_diagnostics_blocks_trading_when_auth_required_and_missing_crede
     assert status["auth_required"] is True
     assert status["can_trade"] is False
     assert bool(status.get("startup_error"))
+
+
+def test_ticker_switches_to_public_only_after_auth_failure() -> None:
+    fetcher = KuCoinDataFetcher()
+    fetcher._offline_mode = False
+    fetcher._public_only_mode = False
+    fetcher._credentials_present = True
+
+    class _AuthFailMarket:
+        @staticmethod
+        def get_ticker(_symbol: str):
+            raise RuntimeError('401-{"code":"400003","msg":"KC-API-KEY not exists"}')
+
+    fetcher.market = _AuthFailMarket()
+    fetcher._fetch_ticker_via_kucoin_rest = lambda _symbol: {  # type: ignore[method-assign]
+        "price": 1.0,
+        "best_bid": 0.99,
+        "best_ask": 1.01,
+        "size": 10.0,
+        "time": 1.0,
+        "source": "kucoin_rest",
+    }
+
+    ticker = fetcher.get_ticker("XRP-USDT")
+    assert ticker["source"] == "kucoin_rest"
+    assert fetcher._public_only_mode is True
+    status = fetcher.get_market_data_status("XRP-USDT")
+    assert status["public_only_mode"] is True
+
+
+def test_ticker_uses_last_known_price_when_network_sources_fail() -> None:
+    fetcher = KuCoinDataFetcher()
+    fetcher._offline_mode = True
+    fetcher._public_only_mode = True
+    fetcher._last_prices["XRP-USDT"] = 1.2345
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("network down")
+
+    fetcher._fetch_ticker_via_kucoin_rest = _boom  # type: ignore[method-assign]
+    fetcher._fetch_ticker_via_binance_rest = _boom  # type: ignore[method-assign]
+
+    ticker = fetcher.get_ticker("XRP-USDT")
+    assert ticker["source"] == "last_known"
+    assert ticker["price"] == pytest.approx(1.2345)

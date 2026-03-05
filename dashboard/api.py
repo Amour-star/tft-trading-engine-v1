@@ -98,6 +98,12 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _display_metric(value: Any, *, available: bool, precision: int = 4) -> str:
+    if not available:
+        return "N/A"
+    return f"{_safe_float(value, 0.0):.{precision}f}"
+
+
 def _is_symbol_scoped_runtime() -> bool:
     return not _quant_engine_enabled()
 
@@ -469,7 +475,10 @@ def get_status():
 
             paper_positions = positions
             paper_unrealized_pnl = _safe_float(unrealized, 0.0)
-            paper_equity = _safe_float(paper_starting_balance + paper_realized_pnl + paper_unrealized_pnl, 0.0)
+            paper_equity = _safe_float(
+                virtual_balance + paper_position_value,
+                virtual_balance + paper_unrealized_pnl,
+            )
             balance = virtual_balance
             universe = sorted({str(pos.get("symbol")) for pos in positions if pos.get("symbol")})
         else:
@@ -766,7 +775,7 @@ def get_performance():
         for p in positions_payload
     )
     if mode == "PAPER":
-        equity = _safe_float(status_payload.get("paper_equity"), balance + net_position_value)
+        equity = _safe_float(balance + net_position_value, balance + unrealized_pnl)
     else:
         equity = balance + unrealized_pnl
     metrics_payload = get_metrics() or {}
@@ -1660,15 +1669,23 @@ def get_metrics():
             .first()
         )
         if latest is not None:
+            min_trades_for_ratios = max(2, int(getattr(settings.trading, "metrics_min_trades", 20)))
+            ratio_ready = _safe_int(latest.total_trades, 0) >= min_trades_for_ratios
+            win_rate_ready = _safe_int(latest.total_trades, 0) >= min_trades_for_ratios
+            profit_factor_ready = ratio_ready and _safe_float(latest.profit_factor, 0.0) > 0.0
             return _json_safe(
                 {
                     "symbol": target_symbol,
                     "timestamp": latest.timestamp.isoformat() if latest.timestamp else datetime.utcnow().isoformat(),
                     "sharpe_ratio": _safe_float(latest.sharpe, 0.0),
+                    "sharpe_ratio_display": _display_metric(latest.sharpe, available=ratio_ready),
                     "sortino_ratio": _safe_float(latest.sortino, 0.0),
+                    "sortino_ratio_display": _display_metric(latest.sortino, available=ratio_ready),
                     "max_drawdown": _safe_float(latest.max_drawdown, 0.0),
                     "win_rate": _safe_float(latest.win_rate, 0.0),
+                    "win_rate_display": _display_metric(latest.win_rate, available=win_rate_ready),
                     "profit_factor": _safe_float(latest.profit_factor, 0.0),
+                    "profit_factor_display": _display_metric(latest.profit_factor, available=profit_factor_ready),
                     "average_trade": _safe_float(latest.average_trade, 0.0),
                     "exposure_pct": _safe_float(latest.exposure, 0.0),
                     "equity": _safe_float(latest.equity, 0.0),
@@ -1676,6 +1693,7 @@ def get_metrics():
                     "total_trades": _safe_int(latest.total_trades, 0),
                     "win_count": _safe_int(latest.winning_trades, 0),
                     "loss_count": _safe_int(latest.losing_trades, 0),
+                    "metrics_ready": bool(ratio_ready),
                 }
             )
     finally:
@@ -1695,15 +1713,20 @@ def get_metrics():
         finally:
             session.close()
         payload = PortfolioMetrics(symbols=symbols or [ACTIVE_SYMBOL]).compute_portfolio_metrics()
+        metrics_ready = bool(payload.get("metrics_ready", False))
         return _json_safe(
             {
                 "symbol": target_symbol,
                 "timestamp": datetime.utcnow().isoformat(),
                 "sharpe_ratio": _safe_float(payload.get("portfolio_sharpe"), 0.0),
+                "sharpe_ratio_display": str(payload.get("portfolio_sharpe_display", "N/A")),
                 "sortino_ratio": 0.0,
+                "sortino_ratio_display": str(payload.get("portfolio_sortino_display", "N/A")),
                 "max_drawdown": 0.0,
                 "win_rate": 0.0,
+                "win_rate_display": str(payload.get("portfolio_win_rate_display", "N/A")),
                 "profit_factor": 0.0,
+                "profit_factor_display": "N/A",
                 "average_trade": 0.0,
                 "exposure_pct": 0.0,
                 "equity": 0.0,
@@ -1711,6 +1734,7 @@ def get_metrics():
                 "total_trades": 0,
                 "win_count": 0,
                 "loss_count": 0,
+                "metrics_ready": metrics_ready,
             }
         )
     tracker = PerformanceTracker(ACTIVE_SYMBOL)

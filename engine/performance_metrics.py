@@ -85,9 +85,10 @@ def update_risk_metrics_snapshot(equity_override: Optional[float] = None) -> Opt
         mean_return = sum(rolling_returns) / len(rolling_returns)
         min_trades_for_ratios = max(2, int(getattr(settings.trading, "metrics_min_trades", 20)))
         std_return = _std(rolling_returns)
+        ratios_available = len(rolling_returns) >= min_trades_for_ratios
         sharpe = (
             (mean_return / std_return)
-            if len(rolling_returns) >= min_trades_for_ratios and std_return > 1e-12
+            if ratios_available and std_return > 1e-6
             else 0.0
         )
 
@@ -95,12 +96,21 @@ def update_risk_metrics_snapshot(equity_override: Optional[float] = None) -> Opt
         std_negative = _std(negative_returns)
         sortino = (
             (mean_return / std_negative)
-            if len(rolling_returns) >= min_trades_for_ratios and std_negative > 1e-12
+            if ratios_available and std_negative > 1e-6
             else 0.0
         )
+        if not math.isfinite(sharpe) or abs(sharpe) > 50.0:
+            sharpe = 0.0
+            ratios_available = False
+        if not math.isfinite(sortino) or abs(sortino) > 50.0:
+            sortino = 0.0
+            ratios_available = False
 
         wins = sum(1 for pnl in rolling_pnls if pnl > 0)
         win_rate = wins / len(rolling_pnls) if rolling_pnls else 0.0
+        win_rate_display = "N/A" if len(rolling_pnls) < min_trades_for_ratios else f"{win_rate:.4f}"
+        sharpe_display = "N/A" if not ratios_available else f"{sharpe:.4f}"
+        sortino_display = "N/A" if not ratios_available else f"{sortino:.4f}"
 
         equity = (
             _safe_float(equity_override)
@@ -115,9 +125,13 @@ def update_risk_metrics_snapshot(equity_override: Optional[float] = None) -> Opt
             "equity": equity,
             "return": return_value,
             "sharpe": sharpe,
+            "sharpe_display": sharpe_display,
             "sortino": sortino,
+            "sortino_display": sortino_display,
             "max_drawdown": max_drawdown,
             "win_rate": win_rate,
+            "win_rate_display": win_rate_display,
+            "metrics_ready": bool(ratios_available),
         }
         session.add(
             PerformanceMetric(

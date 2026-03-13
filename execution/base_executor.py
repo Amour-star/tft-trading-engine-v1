@@ -13,9 +13,9 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from loguru import logger
 
-from config.settings import ACTIVE_SYMBOL, settings
+from config.settings import settings
 from data.database import PositionEvent
-from data.database import Trade, get_session
+from data.database import Prediction, Trade, get_session
 from execution.event_bus import publish_event
 from risk.safety_layer import (
     abnormal_trade_detector,
@@ -41,6 +41,12 @@ from utils.logging import log_trade
 if TYPE_CHECKING:
     from data.fetcher import KuCoinDataFetcher
     from engine.decision import TradeSignal
+
+_NON_LIVE_TICKER_SOURCES = {"synthetic", "last_known", "unavailable", "startup"}
+
+
+def _is_live_ticker_source(source: Any) -> bool:
+    return str(source or "").strip().lower() not in _NON_LIVE_TICKER_SOURCES
 
 
 class BaseExecutor(ABC):
@@ -226,22 +232,28 @@ class BaseExecutor(ABC):
         entry_price: Optional[float] = None,
     ) -> float:
         """
-        Aggressive position sizing: use full available balance.
-        position_size = available_balance * leverage_factor / entry_price
-        leverage_factor defaults to 1.0 (100% of available balance).
-        """
-        if signal.pair != ACTIVE_SYMBOL:
-            raise RuntimeError(f"Symbol mismatch: expected {ACTIVE_SYMBOL}, got {signal.pair}")
+        Risk-based position sizing with a notional cap.
 
+        quantity = (account_risk / stop_distance), then clipped by a configurable
+        max notional fraction so paper execution cannot consume the full account
+        on a single setup.
+        """
         effective_entry = float(entry_price if entry_price is not None else signal.entry_price)
         if effective_entry <= 0:
             logger.error("Entry price is zero, cannot size position")
             return 0.0
+        stop_distance = abs(float(signal.entry_price or 0.0) - float(signal.stop_price or 0.0))
+        if stop_distance <= 0:
+            logger.warning("Stop distance is zero for {}, cannot size position safely", signal.pair)
+            return 0.0
 
-        leverage_factor = 1.0
-        position_value = balance * leverage_factor
-        raw_qty = position_value / effective_entry
+        risk_fraction = max(0.0, min(0.05, float(risk_pct or 0.0)))
+        risk_amount = float(balance) * risk_fraction
+        if risk_amount <= 0:
+            logger.warning("Risk amount is zero for {}, cannot size position", signal.pair)
+            return 0.0
 
+        raw_qty = risk_amount / stop_distance
         qty = self.round_quantity(raw_qty, signal.pair)
 
         info = self.get_symbol_info(signal.pair)
@@ -249,17 +261,30 @@ class BaseExecutor(ABC):
             logger.warning(f"Position size {qty} below minimum {info['base_min_size']}")
             return 0.0
 
-        # Keep a small configurable reserve for fees/slippage.
         fee_buffer_pct = max(0.0, min(0.10, float(os.getenv("POSITION_COST_BUFFER_PCT", "0.0015"))))
+        max_balance_fraction = max(
+            0.05,
+            min(1.0, float(os.getenv("POSITION_MAX_BALANCE_FRACTION", "0.50"))),
+        )
+        max_position_value = float(balance) * max_balance_fraction
         cost = qty * effective_entry
-        max_cost = balance * (1.0 - fee_buffer_pct)
-        if cost > max_cost:
-            qty = self.round_quantity(max_cost / effective_entry, signal.pair)
+        if cost > max_position_value:
+            qty = self.round_quantity(max_position_value / effective_entry, signal.pair)
+            cost = qty * effective_entry
+
+        max_cost_with_buffer = float(balance) * (1.0 - fee_buffer_pct)
+        if cost > max_cost_with_buffer:
+            qty = self.round_quantity(max_cost_with_buffer / effective_entry, signal.pair)
+
+        if qty < info["base_min_size"]:
+            logger.warning(f"Position size {qty} below minimum {info['base_min_size']} after capping")
+            return 0.0
 
         logger.info(
             f"POSITION_SIZE | symbol={signal.pair} | balance={balance:.2f} | "
-            f"entry={effective_entry:.6f} | qty={qty} | "
-            f"notional={qty * effective_entry:.2f} | leverage_factor={leverage_factor} | "
+            f"entry={effective_entry:.6f} | stop_distance={stop_distance:.6f} | "
+            f"risk_pct={risk_fraction:.4f} | risk_amount={risk_amount:.2f} | qty={qty} | "
+            f"notional={qty * effective_entry:.2f} | max_balance_fraction={max_balance_fraction:.2f} | "
             f"fee_buffer_pct={fee_buffer_pct:.4f}"
         )
 
@@ -279,8 +304,6 @@ class BaseExecutor(ABC):
                 "mode": self.mode,
             },
         )
-        if signal.pair != ACTIVE_SYMBOL:
-            raise RuntimeError(f"Symbol mismatch: expected {ACTIVE_SYMBOL}, got {signal.pair}")
         if is_safe_mode():
             logger.bind(event="TRADE_BLOCKED", pair=signal.pair, reason="safe_mode").warning(
                 "TRADE_BLOCKED"
@@ -301,11 +324,11 @@ class BaseExecutor(ABC):
             publish_event("RISK_REJECTED", {"symbol": signal.pair, "reason": "spot_only_mode"})
             return None
         bounded_multiplier = max(0.1, min(2.0, float(risk_multiplier)))
-        # Keep strategy risk metadata even when full-balance sizing is enabled.
         risk_pct = max(
             0.0,
             min(1.0, float(getattr(signal, "risk_per_trade", settings.trading.risk_per_trade or 0.0))),
         )
+        effective_risk_pct = max(0.0, min(0.05, risk_pct * bounded_multiplier))
 
         try:
             ticker = self.fetcher.get_ticker(signal.pair)
@@ -316,13 +339,20 @@ class BaseExecutor(ABC):
 
         mark_price = float(ticker.get("price") or 0.0)
         ticker_source = str(ticker.get("source", "unknown"))
-        if settings.trading.paper_require_live_price and self.mode == "PAPER" and ticker_source == "synthetic":
+        if (
+            settings.trading.paper_require_live_price
+            and self.mode == "PAPER"
+            and not _is_live_ticker_source(ticker_source)
+        ):
             logger.bind(
                 event="LIVE_PRICE_REQUIRED",
                 pair=signal.pair,
                 source=ticker_source,
             ).error("LIVE_PRICE_REQUIRED")
-            publish_event("RISK_REJECTED", {"symbol": signal.pair, "reason": "paper_live_price_required"})
+            publish_event(
+                "RISK_REJECTED",
+                {"symbol": signal.pair, "reason": f"paper_live_price_required:{ticker_source}"},
+            )
             return None
         logger.info(f"LIVE PRICE {signal.pair}: {mark_price:.8f} source={ticker_source}")
         market_entry_price = mark_price
@@ -378,7 +408,7 @@ class BaseExecutor(ABC):
         base_quantity = self.calculate_position_size(
             signal,
             available_balance,
-            risk_pct,
+            effective_risk_pct,
             entry_price=market_entry_price,
         )
         size_multiplier = max(0.1, min(3.0, float(getattr(signal, "position_size_multiplier", 1.0))))
@@ -415,10 +445,17 @@ class BaseExecutor(ABC):
             "confidence": float(signal.confidence),
             "quantity": quantity,
             "mark_price": mark_price,
-            "risk_per_trade": risk_pct,
-            "full_balance_mode": True,
-            "max_position_fraction": 1.0,
+            "risk_per_trade": effective_risk_pct,
+            "risk_multiplier": bounded_multiplier,
+            "position_size_multiplier": size_multiplier,
+            "full_balance_mode": False,
+            "max_position_fraction": max(
+                0.05,
+                min(1.0, float(os.getenv("POSITION_MAX_BALANCE_FRACTION", "0.50"))),
+            ),
             "balance": available_balance,
+            "estimated_fee_drag_pct": float(getattr(signal, "estimated_fee_drag_pct", 0.0) or 0.0),
+            "expected_edge_pct": float(getattr(signal, "expected_edge_pct", 0.0) or 0.0),
         }
 
         validation = validate_trade(trade_data, available_balance)
@@ -442,7 +479,8 @@ class BaseExecutor(ABC):
 
         logger.info(
             f"[{self.mode}] Executing {signal.pair}: qty={quantity}, "
-            f"entry~{market_entry_price:.6f}, risk_multiplier={bounded_multiplier:.2f}"
+            f"entry~{market_entry_price:.6f}, risk_multiplier={bounded_multiplier:.2f}, "
+            f"effective_risk_pct={effective_risk_pct:.4f}, size_multiplier={size_multiplier:.2f}"
         )
         publish_event(
             "EXECUTION_VALIDATED",
@@ -538,6 +576,7 @@ class BaseExecutor(ABC):
                     "latency_ms": float(latency_ms),
                 },
             )
+            self._mark_latest_prediction_acted_on(signal.pair)
             return trade_id
         except Exception as exc:
             logger.error(f"Execution failed for {signal.pair}: {exc}")
@@ -551,6 +590,25 @@ class BaseExecutor(ABC):
                 },
             )
             return None
+
+    def _mark_latest_prediction_acted_on(self, pair: str) -> None:
+        session = get_session()
+        try:
+            latest_prediction = (
+                session.query(Prediction)
+                .filter(Prediction.pair == pair, Prediction.acted_on.is_(False))
+                .order_by(Prediction.timestamp.desc(), Prediction.id.desc())
+                .first()
+            )
+            if latest_prediction is None:
+                return
+            latest_prediction.acted_on = True
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            logger.debug("Could not mark prediction acted_on for {}: {}", pair, exc)
+        finally:
+            session.close()
 
     def _record_open_trade(
         self,
@@ -571,6 +629,16 @@ class BaseExecutor(ABC):
             return
         session = get_session()
         try:
+            model_version = ";".join(
+                [
+                    token
+                    for token in [
+                        f"tft={getattr(signal, 'tft_model_version', '')}" if getattr(signal, "tft_model_version", "") else "",
+                        f"xgb={getattr(signal, 'meta_model_version', '')}" if getattr(signal, "meta_model_version", "") else "",
+                    ]
+                    if token
+                ]
+            ) or None
             trade = Trade(
                 trade_id=trade_id,
                 pair=signal.pair,
@@ -591,7 +659,7 @@ class BaseExecutor(ABC):
                 final_ai_score=float(getattr(signal, "final_ai_score", signal.ai_score)),
                 weight_snapshot_json=json.dumps(getattr(signal, "weight_snapshot", {}), sort_keys=True),
                 governance_code=signal.governance_code or None,
-                model_version=self.fetcher.__class__.__name__,
+                model_version=model_version,
                 features_at_entry=signal.features_snapshot,
                 prediction={
                     "prob_up": signal.prob_up,
@@ -620,6 +688,18 @@ class BaseExecutor(ABC):
                     "side": str(getattr(signal, "side", "BUY")).upper(),
                     "position_size_multiplier": float(getattr(signal, "position_size_multiplier", 1.0)),
                     "adaptive_threshold": float(getattr(signal, "adaptive_threshold", 0.0)),
+                    "expected_edge_pct": float(getattr(signal, "expected_edge_pct", 0.0)),
+                    "estimated_fee_drag_pct": float(getattr(signal, "estimated_fee_drag_pct", 0.0)),
+                    "directional_edge": float(getattr(signal, "directional_edge", 0.0)),
+                    "direction_source": str(getattr(signal, "direction_source", "probabilities")),
+                    "decision_context": getattr(signal, "decision_context", {}),
+                    "allow_reasons": list(getattr(signal, "allow_reasons", []) or []),
+                    "block_reasons": list(getattr(signal, "block_reasons", []) or []),
+                    "signal_timestamp": (
+                        getattr(signal, "timestamp", None).isoformat()
+                        if isinstance(getattr(signal, "timestamp", None), datetime)
+                        else getattr(signal, "timestamp", None)
+                    ),
                     "regime": getattr(signal, "regime", {}),
                 },
                 ai_reasoning=signal.reasoning,

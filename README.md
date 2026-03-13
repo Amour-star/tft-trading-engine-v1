@@ -190,3 +190,39 @@ The smoke test validates:
 - No `None`/NaN in key numeric fields.
 - Market-data source flags (`real` / `public_ticker` / `synthetic`).
 - Dashboard health endpoint (`/_stcore/health`).
+
+## Automation Diagnostics
+
+The repository includes read-only monitoring scripts for Codex automations:
+
+- `scripts/check_docker.sh`: checks Docker daemon/compose containers, health status, restart loops, memory usage, and recent error logs.
+- `scripts/check_api.sh`: checks API reachability and core endpoints (`/status`, model endpoint, portfolio endpoint, trades endpoint), with latency and freshness checks.
+- `scripts/check_trades.py`: analyzes recent trade performance from DB + API + logs (frequency, win rate, realized PnL, R-multiple, drawdown, open positions, slippage).
+- `scripts/analyze_decisions.py`: inspects decision-cycle outcomes (blocked cycles, safety blocks, rejection reasons, fallback usage, low-signal prevalence).
+- `scripts/daily_model_review.py`: reviews model artifacts/registry/training signals (latest version, training age, validation metrics, model size, fallback activation).
+
+Typical automation usage:
+
+```bash
+sh scripts/check_docker.sh
+sh scripts/check_api.sh --base-url http://127.0.0.1:8002
+python scripts/check_trades.py --state-root state --logs-dir logs
+python scripts/analyze_decisions.py --state-root state --logs-dir logs
+python scripts/daily_model_review.py --saved-models-dir saved_models --state-root state --logs-dir logs
+```
+
+All scripts return structured JSON:
+
+```json
+{
+  "status": "ok",
+  "issues": [],
+  "metrics": {}
+}
+```
+
+Status semantics:
+
+- `ok`: no major issues
+- `warning`: issues detected that need operator attention
+- `critical`: severe or blocking failure

@@ -26,6 +26,33 @@ services:
       retries: 10
       start_period: 20s
 
+  market-data:
+    build:
+      context: .
+      dockerfile: Dockerfile.engine
+    image: tft-engine-runtime:latest
+    command: ["python3.11","-m" ,"scripts.run_market_data_service"]
+    env_file: .env
+    environment:
+      ORACLE_ENABLED: "false"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      MARKET_DATA_SYMBOLS: ${MARKET_DATA_SYMBOLS:-BTC-USDT,ETH-USDT,XRP-USDT,DOGE-USDT}
+      MARKET_TICKER_CHANNEL: ${MARKET_TICKER_CHANNEL:-market:ticker}
+      MARKET_TICKER_KEY_PREFIX: ${MARKET_TICKER_KEY_PREFIX:-market:ticker:}
+      MARKET_HALT_KEY_PREFIX: ${MARKET_HALT_KEY_PREFIX:-market:halt:}
+      MARKET_CONTROL_CHANNEL: ${MARKET_CONTROL_CHANNEL:-market:control}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3.11", "-c", "import os,redis; r=redis.Redis(host=os.getenv('REDIS_HOST','redis'), port=int(os.getenv('REDIS_PORT','6379'))); r.ping()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      redis:
+        condition: service_started
+
   engine-btc:
     build:
       context: .
@@ -49,6 +76,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
       SQLITE_PATH: /app/state/tft_engine.db
       PAPER_DB_PATH: /app/state/paper_trading.db
+      SQLITE_WAL_MODE: "false"
+      SQLITE_JOURNAL_MODE: ${SQLITE_JOURNAL_MODE:-DELETE}
+      SQLITE_FALLBACK_JOURNAL_MODE: ${SQLITE_FALLBACK_JOURNAL_MODE:-DELETE}
+      PAPER_DB_JOURNAL_MODE: ${PAPER_DB_JOURNAL_MODE:-DELETE}
       ENGINE_LOCK_FILE: /app/state/tft_engine.lock
       ENGINE_HEALTH_PORT: "9000"
       NVIDIA_VISIBLE_DEVICES: all
@@ -68,6 +99,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      market-data:
+        condition: service_healthy
     runtime: nvidia
     deploy:
       resources:
@@ -91,6 +124,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
       SQLITE_PATH: /app/state/tft_engine.db
       PAPER_DB_PATH: /app/state/paper_trading.db
+      SQLITE_WAL_MODE: "false"
+      SQLITE_JOURNAL_MODE: ${SQLITE_JOURNAL_MODE:-DELETE}
+      SQLITE_FALLBACK_JOURNAL_MODE: ${SQLITE_FALLBACK_JOURNAL_MODE:-DELETE}
+      PAPER_DB_JOURNAL_MODE: ${PAPER_DB_JOURNAL_MODE:-DELETE}
       ENGINE_LOCK_FILE: /app/state/tft_engine.lock
     volumes:
       - ./state/btc:/app/state
@@ -130,6 +167,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
       SQLITE_PATH: /app/state/tft_engine.db
       PAPER_DB_PATH: /app/state/paper_trading.db
+      SQLITE_WAL_MODE: "false"
+      SQLITE_JOURNAL_MODE: ${SQLITE_JOURNAL_MODE:-DELETE}
+      SQLITE_FALLBACK_JOURNAL_MODE: ${SQLITE_FALLBACK_JOURNAL_MODE:-DELETE}
+      PAPER_DB_JOURNAL_MODE: ${PAPER_DB_JOURNAL_MODE:-DELETE}
       ENGINE_LOCK_FILE: /app/state/tft_engine.lock
       ENGINE_HEALTH_PORT: "9000"
       NVIDIA_VISIBLE_DEVICES: all
@@ -149,6 +190,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      market-data:
+        condition: service_healthy
       engine-btc:
         condition: service_started
     runtime: nvidia
@@ -174,6 +217,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
       SQLITE_PATH: /app/state/tft_engine.db
       PAPER_DB_PATH: /app/state/paper_trading.db
+      SQLITE_WAL_MODE: "false"
+      SQLITE_JOURNAL_MODE: ${SQLITE_JOURNAL_MODE:-DELETE}
+      SQLITE_FALLBACK_JOURNAL_MODE: ${SQLITE_FALLBACK_JOURNAL_MODE:-DELETE}
+      PAPER_DB_JOURNAL_MODE: ${PAPER_DB_JOURNAL_MODE:-DELETE}
       ENGINE_LOCK_FILE: /app/state/tft_engine.lock
     volumes:
       - ./state/eth:/app/state
@@ -213,6 +260,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
       SQLITE_PATH: /app/state/tft_engine.db
       PAPER_DB_PATH: /app/state/paper_trading.db
+      SQLITE_WAL_MODE: "false"
+      SQLITE_JOURNAL_MODE: ${SQLITE_JOURNAL_MODE:-DELETE}
+      SQLITE_FALLBACK_JOURNAL_MODE: ${SQLITE_FALLBACK_JOURNAL_MODE:-DELETE}
+      PAPER_DB_JOURNAL_MODE: ${PAPER_DB_JOURNAL_MODE:-DELETE}
       ENGINE_LOCK_FILE: /app/state/tft_engine.lock
       ENGINE_HEALTH_PORT: "9000"
       NVIDIA_VISIBLE_DEVICES: all
@@ -232,6 +283,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      market-data:
+        condition: service_healthy
       engine-btc:
         condition: service_started
     runtime: nvidia
@@ -257,6 +310,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
       SQLITE_PATH: /app/state/tft_engine.db
       PAPER_DB_PATH: /app/state/paper_trading.db
+      SQLITE_WAL_MODE: "false"
+      SQLITE_JOURNAL_MODE: ${SQLITE_JOURNAL_MODE:-DELETE}
+      SQLITE_FALLBACK_JOURNAL_MODE: ${SQLITE_FALLBACK_JOURNAL_MODE:-DELETE}
+      PAPER_DB_JOURNAL_MODE: ${PAPER_DB_JOURNAL_MODE:-DELETE}
       ENGINE_LOCK_FILE: /app/state/tft_engine.lock
     volumes:
       - ./state/xrp:/app/state
@@ -296,6 +353,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
       SQLITE_PATH: /app/state/tft_engine.db
       PAPER_DB_PATH: /app/state/paper_trading.db
+      SQLITE_WAL_MODE: "false"
+      SQLITE_JOURNAL_MODE: ${SQLITE_JOURNAL_MODE:-DELETE}
+      SQLITE_FALLBACK_JOURNAL_MODE: ${SQLITE_FALLBACK_JOURNAL_MODE:-DELETE}
+      PAPER_DB_JOURNAL_MODE: ${PAPER_DB_JOURNAL_MODE:-DELETE}
       ENGINE_LOCK_FILE: /app/state/tft_engine.lock
       ENGINE_HEALTH_PORT: "9000"
       NVIDIA_VISIBLE_DEVICES: all
@@ -315,6 +376,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      market-data:
+        condition: service_healthy
       engine-btc:
         condition: service_started
     runtime: nvidia
@@ -340,6 +403,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
       SQLITE_PATH: /app/state/tft_engine.db
       PAPER_DB_PATH: /app/state/paper_trading.db
+      SQLITE_WAL_MODE: "false"
+      SQLITE_JOURNAL_MODE: ${SQLITE_JOURNAL_MODE:-DELETE}
+      SQLITE_FALLBACK_JOURNAL_MODE: ${SQLITE_FALLBACK_JOURNAL_MODE:-DELETE}
+      PAPER_DB_JOURNAL_MODE: ${PAPER_DB_JOURNAL_MODE:-DELETE}
       ENGINE_LOCK_FILE: /app/state/tft_engine.lock
     volumes:
       - ./state/doge:/app/state
@@ -376,19 +443,76 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-tft_trading}
       POSTGRES_USER: ${POSTGRES_USER:-trader}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
-      SQLITE_PATH: /app/state/tft_engine.db
+      SQLITE_PATH: /app/state/training/tft_engine.db
       PAPER_DB_PATH: /app/state/paper_trading.db
+      SQLITE_WAL_MODE: "false"
+      SQLITE_JOURNAL_MODE: ${SQLITE_JOURNAL_MODE:-DELETE}
+      SQLITE_FALLBACK_JOURNAL_MODE: ${SQLITE_FALLBACK_JOURNAL_MODE:-DELETE}
+      PAPER_DB_JOURNAL_MODE: ${PAPER_DB_JOURNAL_MODE:-DELETE}
       ENGINE_LOCK_FILE: /app/state/tft_engine.lock
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:
-      - ./state/training:/app/state
+      - ./state:/app/state
+      - ./data:/app/data
       - ./saved_models:/app/saved_models
     depends_on:
       database:
         condition: service_healthy
       redis:
         condition: service_started
+      market-data:
+        condition: service_healthy
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
+  self-learning:
+    profiles: ["self-learning"]
+    build:
+      context: .
+      dockerfile: Dockerfile.training
+    image: tft-training:latest
+    command:
+      [
+        "bash",
+        "-lc",
+        "python3.11 scripts/run_self_learning_cycle.py --interval-hours ${SELF_LEARNING_INTERVAL_HOURS:-24}"
+      ]
+    env_file: .env
+    environment:
+      ORACLE_ENABLED: "false"
+      REDIS_HOST: redis
+      DATABASE_MODE: ${DATABASE_MODE:-SQLITE}
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-tft_trading}
+      POSTGRES_USER: ${POSTGRES_USER:-trader}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
+      SQLITE_PATH: /app/state/training/tft_engine.db
+      PAPER_DB_PATH: /app/state/paper_trading.db
+      SQLITE_WAL_MODE: "false"
+      SQLITE_JOURNAL_MODE: ${SQLITE_JOURNAL_MODE:-DELETE}
+      SQLITE_FALLBACK_JOURNAL_MODE: ${SQLITE_FALLBACK_JOURNAL_MODE:-DELETE}
+      PAPER_DB_JOURNAL_MODE: ${PAPER_DB_JOURNAL_MODE:-DELETE}
+      ENGINE_LOCK_FILE: /app/state/tft_engine.lock
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - ./state:/app/state
+      - ./data:/app/data
+      - ./saved_models:/app/saved_models
+    restart: unless-stopped
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      market-data:
+        condition: service_healthy
     runtime: nvidia
     deploy:
       resources:
@@ -469,6 +593,10 @@ services:
       ENGINE_REBALANCE_INTERVAL_SECONDS: "300"
       SQLITE_PATH: /app/state/tft_engine.db
       PAPER_DB_PATH: /app/state/paper_trading.db
+      SQLITE_WAL_MODE: "false"
+      SQLITE_JOURNAL_MODE: ${SQLITE_JOURNAL_MODE:-DELETE}
+      SQLITE_FALLBACK_JOURNAL_MODE: ${SQLITE_FALLBACK_JOURNAL_MODE:-DELETE}
+      PAPER_DB_JOURNAL_MODE: ${PAPER_DB_JOURNAL_MODE:-DELETE}
       ENGINE_LOCK_FILE: /app/state/tft_engine.lock
       DATABASE_MODE: ${DATABASE_MODE:-SQLITE}
       POSTGRES_HOST: database
@@ -500,6 +628,10 @@ services:
       UNIVERSE: ${UNIVERSE:-BTC-USDT,ETH-USDT,SOL-USDT,BNB-USDT,DOGE-USDT,XRP-USDT,AVAX-USDT}
       SQLITE_PATH: /app/state/tft_engine.db
       PAPER_DB_PATH: /app/state/paper_trading.db
+      SQLITE_WAL_MODE: "false"
+      SQLITE_JOURNAL_MODE: ${SQLITE_JOURNAL_MODE:-DELETE}
+      SQLITE_FALLBACK_JOURNAL_MODE: ${SQLITE_FALLBACK_JOURNAL_MODE:-DELETE}
+      PAPER_DB_JOURNAL_MODE: ${PAPER_DB_JOURNAL_MODE:-DELETE}
       ENGINE_LOCK_FILE: /app/state/tft_engine.lock
       DATABASE_MODE: ${DATABASE_MODE:-SQLITE}
       POSTGRES_HOST: database
@@ -540,6 +672,3 @@ services:
 volumes:
   redis_data:
   postgres_data:
-
-
-

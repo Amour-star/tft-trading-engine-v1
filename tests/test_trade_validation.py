@@ -54,5 +54,29 @@ def test_negative_mark_price_rejected():
 def test_normal_trade_passes():
     trade = _base_trade()
     trade["quantity"] = 2.0
+    trade["signal_score"] = 0.7
+    trade["expected_edge_pct"] = 0.02
+    trade["estimated_fee_drag_pct"] = 0.002
     result = validate_trade(trade, account_balance=10_000.0)
     assert result["valid"] is True
+
+
+def test_quantity_over_stop_risk_rejected():
+    trade = _base_trade()
+    trade["entry_price"] = 100.0
+    trade["stop_price"] = 95.0
+    trade["quantity"] = 30.0
+    trade["risk_per_trade"] = 0.01
+    result = validate_trade(trade, account_balance=10_000.0)
+    assert result["valid"] is False
+    assert "risk or position caps" in result["reason"]
+
+
+def test_expected_edge_below_costs_rejected():
+    trade = _base_trade()
+    trade["expected_edge_pct"] = 0.001
+    trade["estimated_fee_drag_pct"] = 0.002
+    trade["signal_score"] = 0.8
+    result = validate_trade(trade, account_balance=10_000.0)
+    assert result["valid"] is False
+    assert "Expected edge" in result["reason"]

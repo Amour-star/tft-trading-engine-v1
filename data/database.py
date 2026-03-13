@@ -7,12 +7,14 @@ import atexit
 import importlib
 import os
 from pathlib import Path
+import sqlite3
 import threading
 import time
 import uuid
 from datetime import datetime
 from typing import Optional
 
+import pandas as pd
 from sqlalchemy import (
     CheckConstraint,
     Column,
@@ -30,6 +32,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.orm import DeclarativeBase, Session, scoped_session, sessionmaker
+from sqlalchemy.pool import NullPool
 from loguru import logger
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import OperationalError
@@ -115,6 +118,27 @@ class Prediction(Base):
     model_version = Column(String(50), nullable=True)
     acted_on = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class HistoricalCandle(Base):
+    """Persisted historical OHLCV candles for training and audit reproducibility."""
+    __tablename__ = "historical_candles"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    pair = Column(String(20), nullable=False, index=True)
+    timeframe = Column(String(16), nullable=False, index=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    open = Column(Float, nullable=False)
+    high = Column(Float, nullable=False)
+    low = Column(Float, nullable=False)
+    close = Column(Float, nullable=False)
+    volume = Column(Float, nullable=False, default=0.0)
+    source = Column(String(32), nullable=False, default="fetch_history")
+    ingested_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_historical_candles_pair_tf_ts", "pair", "timeframe", "timestamp", unique=True),
+    )
 
 
 class SignalRecord(Base):
@@ -297,6 +321,77 @@ class StrategyParameter(Base):
     risk_per_trade = Column(Float, nullable=False, default=0.01)
 
 
+class ResearchRun(Base):
+    """Research batch metadata for automated strategy discovery."""
+
+    __tablename__ = "research_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(64), nullable=False, unique=True, index=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    timeframe = Column(String(16), nullable=False, default="15min")
+    mode = Column(String(10), nullable=False, default="PAPER")
+    status = Column(String(20), nullable=False, default="running")
+    candidate_count = Column(Integer, nullable=False, default=0)
+    accepted_count = Column(Integer, nullable=False, default=0)
+    selected_count = Column(Integer, nullable=False, default=0)
+    deployed_count = Column(Integer, nullable=False, default=0)
+    notes_json = Column(JSON, nullable=True)
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+
+
+class ResearchStrategy(Base):
+    """Persisted strategy candidate definition and evaluation payloads."""
+
+    __tablename__ = "research_strategies"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    strategy_id = Column(String(96), nullable=False, unique=True, index=True)
+    run_id = Column(String(64), nullable=False, index=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    timeframe = Column(String(16), nullable=False, default="15min")
+    status = Column(String(20), nullable=False, default="rejected")
+    score = Column(Float, nullable=False, default=0.0)
+    rank_percentile = Column(Float, nullable=False, default=1.0)
+    selected = Column(Boolean, nullable=False, default=False)
+    deployed = Column(Boolean, nullable=False, default=False)
+    failure_reason = Column(Text, nullable=True)
+    definition_json = Column(JSON, nullable=False)
+    indicators_json = Column(JSON, nullable=True)
+    train_metrics_json = Column(JSON, nullable=True)
+    test_metrics_json = Column(JSON, nullable=True)
+    walk_forward_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_research_strategies_symbol_score", "symbol", "score"),
+    )
+
+
+class ResearchDeployment(Base):
+    """Active paper deployments sourced from research runs."""
+
+    __tablename__ = "research_deployments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(64), nullable=False, index=True)
+    strategy_id = Column(String(96), nullable=False, index=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    timeframe = Column(String(16), nullable=False, default="15min")
+    deployment_mode = Column(String(10), nullable=False, default="PAPER")
+    rank_percentile = Column(Float, nullable=False, default=1.0)
+    score = Column(Float, nullable=False, default=0.0)
+    is_active = Column(Boolean, nullable=False, default=True)
+    deployed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    definition_json = Column(JSON, nullable=False)
+
+    __table_args__ = (
+        Index("ix_research_deployments_active", "symbol", "timeframe", "is_active"),
+    )
+
+
 class MetricSnapshot(Base):
     """Institutional metric snapshots for dashboard/api consumers."""
     __tablename__ = "metrics"
@@ -457,18 +552,105 @@ _engine = None
 _SessionFactory = None
 _SessionLocal = None
 _engine_lock = threading.Lock()
+_db_runtime_info: dict[str, object] = {
+    "backend": None,
+    "sqlite_path": None,
+    "sqlite_parent": None,
+    "sqlite_exists": None,
+    "sqlite_parent_writable": None,
+    "sqlite_file_writable": None,
+    "sqlite_requested_journal_mode": None,
+    "sqlite_effective_journal_mode": None,
+}
+
+
+def _update_db_runtime_info(**values: object) -> None:
+    _db_runtime_info.update(values)
+
+
+def get_database_runtime_info() -> dict[str, object]:
+    return dict(_db_runtime_info)
+
+
+def _sqlite_storage_summary(db_path: Path) -> dict[str, object]:
+    parent = db_path.parent
+    file_exists = db_path.exists()
+    return {
+        "sqlite_path": str(db_path),
+        "sqlite_parent": str(parent),
+        "sqlite_exists": file_exists,
+        "sqlite_parent_writable": bool(os.access(parent, os.W_OK)),
+        "sqlite_file_writable": bool(os.access(db_path, os.W_OK)) if file_exists else True,
+    }
+
+
+def _ensure_sqlite_path_ready(db_path: Path) -> None:
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        db_path.touch(exist_ok=True)
+    except Exception as exc:
+        raise RuntimeError(
+            f"SQLite path is not writable: {db_path} (parent={db_path.parent})"
+        ) from exc
+
+    storage = _sqlite_storage_summary(db_path)
+    _update_db_runtime_info(backend="sqlite", **storage)
+    if not bool(storage["sqlite_parent_writable"]):
+        raise RuntimeError(f"SQLite parent directory is not writable: {db_path.parent}")
+    if not bool(storage["sqlite_file_writable"]):
+        raise RuntimeError(f"SQLite database file is not writable: {db_path}")
+
+
+def _set_sqlite_journal_mode(cursor, db_path: Path) -> str:
+    requested_mode = settings.database.sqlite_journal_mode
+    fallback_mode = settings.database.sqlite_fallback_journal_mode
+
+    def _apply(mode: str) -> str:
+        cursor.execute(f"PRAGMA journal_mode={mode};")
+        row = cursor.fetchone()
+        effective_mode = str(row[0]).strip().upper() if row and row[0] is not None else mode
+        _update_db_runtime_info(
+            sqlite_requested_journal_mode=requested_mode,
+            sqlite_effective_journal_mode=effective_mode,
+        )
+        return effective_mode
+
+    try:
+        return _apply(requested_mode)
+    except sqlite3.Error as exc:
+        if fallback_mode and fallback_mode != requested_mode:
+            logger.warning(
+                "SQLite journal mode {} failed for {} ({}). Falling back to {}.",
+                requested_mode,
+                db_path,
+                exc,
+                fallback_mode,
+            )
+            return _apply(fallback_mode)
+        raise RuntimeError(
+            "SQLite journal mode setup failed for "
+            f"{db_path} (requested={requested_mode}, fallback={fallback_mode or 'none'}): {exc}"
+        ) from exc
 
 
 def _configure_sqlite_connection(dbapi_connection, _connection_record) -> None:
     cursor = dbapi_connection.cursor()
-    if settings.database.sqlite_wal_mode:
-        cursor.execute("PRAGMA journal_mode=WAL;")
-    cursor.execute("PRAGMA busy_timeout=30000;")
-    cursor.execute("PRAGMA synchronous=NORMAL;")
-    cursor.execute("PRAGMA temp_store=MEMORY;")
-    cursor.execute("PRAGMA cache_size=100000;")
-    cursor.execute("PRAGMA foreign_keys=ON;")
-    cursor.close()
+    db_path = settings.database.sqlite_resolved_path
+    try:
+        effective_mode = _set_sqlite_journal_mode(cursor, db_path)
+        cursor.execute("PRAGMA busy_timeout=30000;")
+        cursor.execute("PRAGMA synchronous=NORMAL;")
+        cursor.execute("PRAGMA temp_store=MEMORY;")
+        cursor.execute("PRAGMA cache_size=100000;")
+        cursor.execute("PRAGMA foreign_keys=ON;")
+        logger.debug(
+            "SQLite connection configured: path={} requested_journal_mode={} effective_journal_mode={}",
+            db_path,
+            settings.database.sqlite_journal_mode,
+            effective_mode,
+        )
+    finally:
+        cursor.close()
 
 
 def _create_sqlite_engine():
@@ -477,8 +659,7 @@ def _create_sqlite_engine():
         sqlite_url,
         pool_pre_ping=True,
         connect_args={"check_same_thread": False, "timeout": 30},
-        pool_size=1,
-        max_overflow=0,
+        poolclass=NullPool,
     )
     event.listen(engine, "connect", _configure_sqlite_connection)
     return engine
@@ -556,7 +737,18 @@ def get_engine():
 
         if settings.database.database_mode == "SQLITE":
             sqlite_path = settings.database.sqlite_resolved_path
-            logger.info(f"Using SQLite database: {sqlite_path}")
+            _ensure_sqlite_path_ready(sqlite_path)
+            storage = _sqlite_storage_summary(sqlite_path)
+            logger.info(
+                "Using SQLite database: {} | journal_mode={} | fallback_journal_mode={} | "
+                "exists={} | parent_writable={} | file_writable={}",
+                sqlite_path,
+                settings.database.sqlite_journal_mode,
+                settings.database.sqlite_fallback_journal_mode or "none",
+                storage["sqlite_exists"],
+                storage["sqlite_parent_writable"],
+                storage["sqlite_file_writable"],
+            )
             recovered = False
             while True:
                 _engine = _create_sqlite_engine()
@@ -597,13 +789,26 @@ def get_engine():
                         recovered = True
                         continue
                     raise
-            if settings.database.sqlite_wal_mode:
-                logger.info("WAL mode enabled")
-            logger.info("SQLite optimized for single-node execution")
+            logger.info(
+                "SQLite ready: path={} | effective_journal_mode={} | backend=sqlite",
+                sqlite_path,
+                get_database_runtime_info().get("sqlite_effective_journal_mode")
+                or settings.database.sqlite_journal_mode,
+            )
             return _engine
 
         logger.info(
             f"Using PostgreSQL database: {settings.database.host}:{settings.database.port}"
+        )
+        _update_db_runtime_info(
+            backend="postgres",
+            sqlite_path=None,
+            sqlite_parent=None,
+            sqlite_exists=None,
+            sqlite_parent_writable=None,
+            sqlite_file_writable=None,
+            sqlite_requested_journal_mode=None,
+            sqlite_effective_journal_mode=None,
         )
         try:
             _engine = _create_postgres_engine()
@@ -739,5 +944,59 @@ def get_latest_model_version(model_type: str, active_only: bool = True) -> Optio
         if active_only:
             query = query.filter(ModelVersion.is_active.is_(True))
         return query.order_by(ModelVersion.created_at.desc(), ModelVersion.id.desc()).first()
+    finally:
+        session.close()
+
+
+def replace_historical_candles(
+    pair: str,
+    timeframe: str,
+    frame: pd.DataFrame,
+    *,
+    source: str = "fetch_history",
+) -> int:
+    """Replace persisted OHLCV history for a symbol/timeframe with the provided frame."""
+    if frame is None or frame.empty:
+        return 0
+
+    required = {"timestamp", "open", "high", "low", "close", "volume"}
+    missing = required.difference(frame.columns)
+    if missing:
+        raise ValueError(f"Historical frame missing required columns: {sorted(missing)}")
+
+    working = frame.loc[:, ["timestamp", "open", "high", "low", "close", "volume"]].copy()
+    working["timestamp"] = pd.to_datetime(working["timestamp"], utc=False, errors="coerce")
+    working = working.dropna(subset=["timestamp"]).sort_values("timestamp").drop_duplicates(subset=["timestamp"])
+    if working.empty:
+        return 0
+
+    records = [
+        {
+            "pair": str(pair).strip().upper(),
+            "timeframe": str(timeframe).strip(),
+            "timestamp": row.timestamp.to_pydatetime() if hasattr(row.timestamp, "to_pydatetime") else row.timestamp,
+            "open": float(row.open),
+            "high": float(row.high),
+            "low": float(row.low),
+            "close": float(row.close),
+            "volume": float(row.volume),
+            "source": str(source),
+            "ingested_at": datetime.utcnow(),
+        }
+        for row in working.itertuples(index=False)
+    ]
+
+    session = get_session()
+    try:
+        session.query(HistoricalCandle).filter(
+            HistoricalCandle.pair == str(pair).strip().upper(),
+            HistoricalCandle.timeframe == str(timeframe).strip(),
+        ).delete(synchronize_session=False)
+        session.bulk_insert_mappings(HistoricalCandle, records)
+        session.commit()
+        return len(records)
+    except Exception:
+        session.rollback()
+        raise
     finally:
         session.close()

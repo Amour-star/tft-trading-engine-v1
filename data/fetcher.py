@@ -1,9 +1,10 @@
 """
 KuCoin market data fetcher.
-Handles OHLCV retrieval, top pairs discovery, and real-time data fallbacks.
+Handles OHLCV retrieval, top pairs discovery, and strict live ticker access.
 """
 from __future__ import annotations
 
+import json
 import os
 import random
 import time
@@ -13,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import requests
+import redis
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 from requests import exceptions as requests_exceptions
@@ -146,11 +148,18 @@ class KuCoinDataFetcher:
         url = cfg.base_url
         self._config = cfg
         self._offline_mode = _offline_mode_enabled() or Market is None
-        self._allow_synthetic_orderbook = bool(getattr(cfg, "allow_synthetic_orderbook", False))
+        # Synthetic market-data fallback is intentionally disabled.
+        self._allow_synthetic_orderbook = False
+        self._allow_synthetic_ticker = False
+        self._allow_synthetic_klines = False
         self._orderbook_retry_attempts = max(1, int(getattr(cfg, "orderbook_retry_attempts", 3)))
         self._http_retry_attempts = max(1, int(getattr(cfg, "http_retry_attempts", 4)))
         self._http_timeout_seconds = max(1.0, float(getattr(cfg, "http_timeout_seconds", 4.0)))
         self._http_max_backoff_seconds = max(1.0, float(getattr(cfg, "http_max_backoff_seconds", 8.0)))
+        self._market_data_max_age_seconds = max(
+            5.0,
+            float(getattr(cfg, "market_data_max_age_seconds", 30.0)),
+        )
 
         self.market = None
         self.trade_client = None
@@ -163,8 +172,21 @@ class KuCoinDataFetcher:
         self._startup_checked = False
         self._status_by_symbol: Dict[str, Dict[str, Any]] = {}
         self._last_prices: Dict[str, float] = {
-            ACTIVE_SYMBOL: 0.6,
+            str(ACTIVE_SYMBOL).upper(): 0.6,
         }
+        self._last_valid_ticker: Dict[str, Dict[str, Any]] = {}
+        self._market_exchange = "kucoin"
+        self._ticker_channel = os.getenv("MARKET_TICKER_CHANNEL", "market:ticker").strip() or "market:ticker"
+        self._ticker_key_prefix = (
+            os.getenv("MARKET_TICKER_KEY_PREFIX", "market:ticker:").strip() or "market:ticker:"
+        )
+        self._halt_key_prefix = (
+            os.getenv("MARKET_HALT_KEY_PREFIX", "market:halt:").strip() or "market:halt:"
+        )
+        self._redis: Optional[redis.Redis] = None
+        self._pubsub = None
+        self._redis_connected = False
+        self._redis_error: str = ""
 
         if not self._offline_mode:
             try:
@@ -198,16 +220,178 @@ class KuCoinDataFetcher:
                 logger.warning(f"Failed to initialize KuCoin clients, using offline mode: {exc}")
                 self._offline_mode = True
 
-        if self._offline_mode:
-            logger.warning("KuCoin fetcher running in offline-safe mode.")
+        self._init_market_data_bus()
 
         self._refresh_status(
             ACTIVE_SYMBOL,
             ticker_source="startup",
             orderbook_source="startup",
-            market_data_source="public_ticker",
+            market_data_source="market_data_service",
         )
         self._run_startup_auth_check(force=True)
+
+    def _init_market_data_bus(self) -> None:
+        try:
+            self._redis = redis.Redis(
+                host=settings.redis.host,
+                port=int(settings.redis.port),
+                decode_responses=True,
+                socket_connect_timeout=1.5,
+                socket_timeout=1.5,
+            )
+            self._redis.ping()
+            self._pubsub = self._redis.pubsub(ignore_subscribe_messages=True)
+            self._pubsub.subscribe(self._ticker_channel)
+            self._redis_connected = True
+            self._redis_error = ""
+            logger.bind(
+                event="MARKET_SOURCE",
+                exchange=self._market_exchange,
+                source="market_data_service",
+                channel=self._ticker_channel,
+                status="connected",
+            ).info("MARKET_SOURCE")
+        except Exception as exc:
+            self._redis_connected = False
+            self._redis_error = str(exc)
+            self._pubsub = None
+            logger.bind(
+                event="MARKET_SOURCE",
+                exchange=self._market_exchange,
+                source="market_data_service",
+                channel=self._ticker_channel,
+                status="unavailable",
+                error=self._redis_error,
+            ).error("MARKET_SOURCE")
+
+    @staticmethod
+    def _ticker_timestamp_to_seconds(value: Any) -> float:
+        raw = _as_float(value, 0.0)
+        if raw <= 0:
+            return 0.0
+        # KuCoin WS usually emits milliseconds.
+        if raw > 10_000_000_000:
+            return raw / 1000.0
+        return raw
+
+    def _ingest_market_ticker(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        symbol = str(payload.get("symbol", "")).upper()
+        if not symbol:
+            return None
+
+        price = _as_float(payload.get("price"), 0.0)
+        if price <= 0:
+            return None
+        best_bid = _as_float(payload.get("best_bid"), price)
+        best_ask = _as_float(payload.get("best_ask"), price)
+        if best_bid <= 0:
+            best_bid = price
+        if best_ask <= 0:
+            best_ask = price
+
+        timestamp_raw = (
+            payload.get("timestamp")
+            if payload.get("timestamp") is not None
+            else payload.get("time")
+        )
+        timestamp_sec = self._ticker_timestamp_to_seconds(timestamp_raw)
+        if timestamp_sec <= 0:
+            timestamp_sec = time.time()
+        now = time.time()
+        latency_ms = max(0.0, (now - timestamp_sec) * 1000.0)
+
+        normalized = {
+            "symbol": symbol,
+            "exchange": str(payload.get("exchange") or self._market_exchange),
+            "source": str(payload.get("source") or "market_data_service"),
+            "price": float(price),
+            "best_bid": float(best_bid),
+            "best_ask": float(best_ask),
+            "size": _as_float(payload.get("volume", payload.get("size")), 0.0),
+            "time": float(timestamp_sec * 1000.0),
+            "latency_ms": float(latency_ms),
+            "received_at_unix": float(now),
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+        self._last_prices[symbol] = float(price)
+        self._last_valid_ticker[symbol] = dict(normalized)
+        self._refresh_status(
+            symbol,
+            ticker_source="market_data_service",
+            market_data_source="market_data_service",
+        )
+        return normalized
+
+    def _read_market_ticker_from_key(self, symbol: str) -> Optional[Dict[str, Any]]:
+        if self._redis is None:
+            return None
+        key = f"{self._ticker_key_prefix}{str(symbol).upper()}"
+        raw = self._redis.get(key)
+        if not raw:
+            return None
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="ignore")
+        parsed = json.loads(str(raw))
+        if not isinstance(parsed, dict):
+            return None
+        return self._ingest_market_ticker(parsed)
+
+    def _drain_market_ticker_channel(self) -> None:
+        if self._pubsub is None:
+            return
+        for _ in range(16):
+            msg = self._pubsub.get_message(timeout=0.01)
+            if not msg:
+                break
+            if str(msg.get("type")) != "message":
+                continue
+            payload_raw = msg.get("data")
+            try:
+                if isinstance(payload_raw, bytes):
+                    payload_raw = payload_raw.decode("utf-8", errors="ignore")
+                parsed = json.loads(str(payload_raw))
+                if isinstance(parsed, dict):
+                    self._ingest_market_ticker(parsed)
+            except Exception as exc:
+                logger.debug("Failed to parse market:ticker message: {}", exc)
+
+    def _is_market_halted(self, symbol: str) -> bool:
+        if self._redis is None:
+            return False
+        try:
+            value = self._redis.get(f"{self._halt_key_prefix}{str(symbol).upper()}")
+            return bool(value)
+        except Exception:
+            return False
+
+    def _resolve_live_ticker(self, symbol: str) -> Optional[Dict[str, Any]]:
+        symbol_key = str(symbol or ACTIVE_SYMBOL).upper()
+        if not self._redis_connected:
+            self._init_market_data_bus()
+        self._drain_market_ticker_channel()
+        cached = self._last_valid_ticker.get(symbol_key)
+        if cached:
+            age = time.time() - _as_float(cached.get("received_at_unix"), 0.0)
+            if 0.0 <= age <= self._market_data_max_age_seconds:
+                return {
+                    "symbol": symbol_key,
+                    "price": _as_float(cached.get("price"), 0.0),
+                    "best_bid": _as_float(cached.get("best_bid"), 0.0),
+                    "best_ask": _as_float(cached.get("best_ask"), 0.0),
+                    "size": _as_float(cached.get("size"), 0.0),
+                    "time": _as_float(cached.get("time"), float(int(time.time() * 1000))),
+                    "source": str(cached.get("source") or "market_data_service"),
+                    "latency_ms": _as_float(cached.get("latency_ms"), 0.0),
+                    "exchange": str(cached.get("exchange") or self._market_exchange),
+                }
+
+        try:
+            return self._read_market_ticker_from_key(symbol_key)
+        except Exception as exc:
+            self._redis_error = str(exc)
+            logger.debug("Market ticker key lookup failed for {}: {}", symbol_key, exc)
+            return None
 
     @staticmethod
     def _assert_xrp_symbol(symbol: str) -> None:
@@ -247,12 +431,13 @@ class KuCoinDataFetcher:
 
     def _base_price(self, symbol: str) -> float:
         self._assert_xrp_symbol(symbol)
-        if symbol in self._last_prices:
-            return self._last_prices[symbol]
-        base = symbol.split("-")[0]
+        key = str(symbol or ACTIVE_SYMBOL).upper()
+        if key in self._last_prices:
+            return self._last_prices[key]
+        base = key.split("-")[0]
         seed = sum(ord(ch) for ch in base) % 1000
         price = max(0.05, float(seed))
-        self._last_prices[symbol] = price
+        self._last_prices[key] = price
         return price
 
     def _generate_synthetic_klines(
@@ -296,7 +481,7 @@ class KuCoinDataFetcher:
                 "turnover": turnover.astype(float),
             }
         )
-        self._last_prices[symbol] = float(df["close"].iloc[-1])
+        self._last_prices[str(symbol or ACTIVE_SYMBOL).upper()] = float(df["close"].iloc[-1])
         return df
 
     def _synthetic_orderbook(self, symbol: str, depth: int) -> Dict[str, Any]:
@@ -320,17 +505,122 @@ class KuCoinDataFetcher:
 
     def _cached_ticker(self, symbol: str) -> Optional[Dict[str, Any]]:
         self._assert_xrp_symbol(symbol)
-        price = _as_float(self._last_prices.get(symbol), 0.0)
+        key = str(symbol or ACTIVE_SYMBOL).upper()
+        cached = self._last_valid_ticker.get(key, {})
+        price = _as_float(cached.get("price"), _as_float(self._last_prices.get(key), 0.0))
         if price <= 0:
             return None
-        spread = max(1e-8, price * 0.0005)
+        best_bid = _as_float(cached.get("best_bid"), max(1e-8, price * 0.9995))
+        best_ask = _as_float(cached.get("best_ask"), max(best_bid, price * 1.0005))
+        source_ts = _as_float(cached.get("time"), float(int(time.time() * 1000)))
         return {
             "price": price,
-            "best_bid": max(1e-8, price - spread),
-            "best_ask": price + spread,
-            "size": 0.0,
-            "time": float(int(time.time() * 1000)),
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+            "size": _as_float(cached.get("size"), 0.0),
+            "time": source_ts,
             "source": "last_known",
+            "cached_at": str(cached.get("updated_at", "")),
+        }
+
+    def _cache_valid_ticker(self, symbol: str, ticker: Dict[str, Any]) -> None:
+        key = str(symbol or ACTIVE_SYMBOL).upper()
+        price = _as_float(ticker.get("price"), 0.0)
+        bid = _as_float(ticker.get("best_bid"), price)
+        ask = _as_float(ticker.get("best_ask"), price)
+        if price <= 0 or bid <= 0 or ask <= 0:
+            return
+        source = str(ticker.get("source", "unknown")).lower()
+        if source == "synthetic":
+            return
+        now_iso = datetime.utcnow().isoformat()
+        self._last_prices[key] = price
+        self._last_valid_ticker[key] = {
+            "price": price,
+            "best_bid": bid,
+            "best_ask": ask,
+            "size": _as_float(ticker.get("size"), 0.0),
+            "time": _as_float(ticker.get("time"), float(int(time.time() * 1000))),
+            "source": source,
+            "updated_at": now_iso,
+            "received_at_unix": time.time(),
+        }
+
+    def _get_ticker_age_seconds(self, symbol: str) -> Optional[float]:
+        key = str(symbol or ACTIVE_SYMBOL).upper()
+        cached = self._last_valid_ticker.get(key, {})
+        received_at = _as_float(cached.get("received_at_unix"), -1.0)
+        if received_at <= 0:
+            return None
+        return max(0.0, float(time.time() - received_at))
+
+    @staticmethod
+    def _is_live_ticker_source(source: str) -> bool:
+        src = str(source or "").strip().lower()
+        return src in {"market_data_service", "kucoin_ws", "kucoin_rest"}
+
+    def _compute_market_data_health(self, symbol: str, status: Dict[str, Any]) -> Dict[str, Any]:
+        key = str(symbol or ACTIVE_SYMBOL).upper()
+        source = str(status.get("market_data_source", "market_data_service")).lower()
+        ticker_source = str(status.get("ticker_source", "unknown")).lower()
+        auth_required = bool(status.get("auth_required", False))
+        auth_valid = status.get("auth_valid")
+        credentials_present = bool(status.get("credentials_present", False))
+        halted = self._is_market_halted(key)
+
+        cached = self._last_valid_ticker.get(key, {})
+        last_price = _as_float(cached.get("price"), _as_float(self._last_prices.get(key), 0.0))
+        last_price_ts = str(cached.get("updated_at", "")) or None
+        age_seconds = self._get_ticker_age_seconds(key)
+        is_stale = age_seconds is None or age_seconds > self._market_data_max_age_seconds
+
+        credentials_valid = bool(credentials_present and auth_valid is not False)
+        if auth_required:
+            credentials_valid = bool(auth_valid is True)
+
+        market_data_ready = bool(
+            last_price > 0.0
+            and source == "market_data_service"
+            and self._is_live_ticker_source(ticker_source)
+            and not is_stale
+            and not halted
+            and self._redis_connected
+        )
+        trading_enabled = bool(market_data_ready and (not auth_required or credentials_valid))
+
+        warning = ""
+        if halted:
+            warning = "market_data_halted"
+        elif not self._redis_connected:
+            warning = f"market_data_bus_unavailable:{self._redis_error or 'redis_unreachable'}"
+        elif source != "market_data_service":
+            warning = f"invalid_market_data_source:{source or 'unknown'}"
+        elif not self._is_live_ticker_source(ticker_source):
+            warning = f"ticker_source_unavailable:{ticker_source or 'unknown'}"
+        elif last_price <= 0:
+            warning = "invalid_or_missing_price"
+        elif is_stale:
+            warning = (
+                f"stale_market_data:{age_seconds:.1f}s"
+                if age_seconds is not None
+                else "stale_market_data:unknown_age"
+            )
+
+        return {
+            "last_price": float(last_price),
+            "last_price_timestamp": last_price_ts,
+            "data_age_seconds": float(age_seconds) if age_seconds is not None else None,
+            "market_data_max_age_seconds": float(self._market_data_max_age_seconds),
+            "market_data_ready": bool(market_data_ready),
+            "credentials_valid": bool(credentials_valid),
+            "trading_enabled": bool(trading_enabled),
+            "market_data_warning": warning,
+            "exchange": self._market_exchange,
+            "source": "market_data_service",
+            "latency_ms": _as_float(cached.get("latency_ms"), 0.0),
+            "last_update": last_price_ts,
+            "halted": bool(halted),
+            "redis_connected": bool(self._redis_connected),
         }
 
     def _retry_backoff_seconds(self, attempt: int, retry_after: Optional[str] = None) -> float:
@@ -512,7 +802,7 @@ class KuCoinDataFetcher:
             "bids": bids,
             "asks": asks,
             "time": _as_float(data.get("time"), float(int(time.time() * 1000))),
-            "source": "kucoin_rest_orderbook",
+            "source": "authenticated_orderbook",
         }
 
     def _orderbook_from_ticker(self, symbol: str) -> Dict[str, Any]:
@@ -533,15 +823,17 @@ class KuCoinDataFetcher:
     def _derive_market_data_source(ticker_source: str, orderbook_source: str) -> str:
         ticker_src = str(ticker_source or "").lower()
         book_src = str(orderbook_source or "").lower()
-        if "synthetic" in ticker_src or "synthetic" in book_src:
-            return "synthetic"
-        if book_src in {"public_ticker", "ticker"}:
-            return "public_ticker"
-        if book_src:
-            return "real"
+        if ticker_src == "market_data_service":
+            return "market_data_service"
+        if book_src in {"authenticated_orderbook"}:
+            return "authenticated_orderbook"
+        if "kucoin" in book_src and "orderbook" in book_src:
+            return "authenticated_orderbook"
+        if KuCoinDataFetcher._is_live_ticker_source(ticker_src):
+            return "market_data_service"
         if ticker_src and ticker_src != "startup":
-            return "public_ticker"
-        return "public_ticker"
+            return "unavailable"
+        return "market_data_service"
 
     def _refresh_status(
         self,
@@ -558,7 +850,7 @@ class KuCoinDataFetcher:
                 "symbol": key,
                 "ticker_source": "unknown",
                 "orderbook_source": "unknown",
-                "market_data_source": "public_ticker",
+                "market_data_source": "market_data_service",
             },
         )
         if ticker_source is not None:
@@ -571,14 +863,19 @@ class KuCoinDataFetcher:
                 str(existing.get("orderbook_source", "")),
             )
         existing["market_data_source"] = str(market_data_source)
-        existing["synthetic_active"] = str(existing["market_data_source"]).lower() == "synthetic"
-        existing["allow_synthetic_orderbook"] = bool(self._allow_synthetic_orderbook)
+        existing["synthetic_active"] = False
+        existing["allow_synthetic_orderbook"] = False
+        existing["allow_synthetic_ticker"] = False
+        existing["allow_synthetic_klines"] = False
         existing["credentials_present"] = bool(self._credentials_present)
         existing["auth_required"] = bool(self._auth_required)
         existing["auth_valid"] = self._auth_valid
         existing["auth_error"] = self._auth_error
         existing["public_only_mode"] = bool(self._public_only_mode or self._offline_mode)
         existing["offline_mode"] = bool(self._offline_mode)
+        health = self._compute_market_data_health(key, existing)
+        existing.update(health)
+        existing["can_trade"] = bool(existing.get("trading_enabled", False))
         existing["updated_at"] = datetime.utcnow().isoformat()
         self._status_by_symbol[key] = existing
         return dict(existing)
@@ -633,25 +930,64 @@ class KuCoinDataFetcher:
         requires_auth = bool(self._auth_required or mode == "LIVE")
         self._auth_required = requires_auth
         status = self._run_startup_auth_check(force=True)
+        market_probe_errors: List[str] = []
+        try:
+            self.get_ticker(ACTIVE_SYMBOL)
+        except Exception as exc:
+            market_probe_errors.append(f"ticker_probe_failed:{exc}")
+        try:
+            self.get_orderbook(ACTIVE_SYMBOL, depth=20)
+        except Exception as exc:
+            market_probe_errors.append(f"orderbook_probe_failed:{exc}")
+        status = self.get_market_data_status(ACTIVE_SYMBOL)
         status["trading_mode"] = mode
         status["auth_required"] = requires_auth
         status["credentials_present"] = bool(self._credentials_present)
-        status["can_trade"] = bool(not requires_auth or status.get("auth_valid") is True)
+        status["can_trade"] = bool(status.get("trading_enabled", False))
         if requires_auth and status.get("auth_valid") is not True:
             status["startup_error"] = (
                 status.get("auth_error")
                 or "KuCoin authenticated trading is required but credentials are invalid."
             )
+        elif not bool(status.get("market_data_ready", False)):
+            status["startup_error"] = str(
+                status.get("market_data_warning")
+                or "Market data is not ready for trading."
+            )
+            if market_probe_errors:
+                status["startup_error"] = f"{status['startup_error']} ({' | '.join(market_probe_errors)})"
         else:
             status["startup_error"] = ""
         return status
 
     def get_market_data_status(self, symbol: str = ACTIVE_SYMBOL) -> Dict[str, Any]:
         key = str(symbol or ACTIVE_SYMBOL).upper()
-        status = self._status_by_symbol.get(key)
-        if status is None:
-            status = self._refresh_status(key)
+        status = self._refresh_status(key)
         return dict(status)
+
+    def is_market_data_ready(
+        self,
+        symbol: str = ACTIVE_SYMBOL,
+        *,
+        max_age_seconds: Optional[float] = None,
+    ) -> Tuple[bool, str]:
+        status = self.get_market_data_status(symbol)
+        if not bool(status.get("market_data_ready", False)):
+            return False, str(status.get("market_data_warning") or "market_data_not_ready")
+
+        if max_age_seconds is None:
+            return True, "ready"
+
+        try:
+            max_age = max(1.0, float(max_age_seconds))
+        except Exception:
+            max_age = float(self._market_data_max_age_seconds)
+        age = status.get("data_age_seconds")
+        if age is None:
+            return False, "market_data_age_unknown"
+        if _as_float(age, 1e12) > max_age:
+            return False, f"stale_market_data:{_as_float(age, 0.0):.1f}s>{max_age:.1f}s"
+        return True, "ready"
 
     def _fetch_ticker_via_binance_rest(self, symbol: str) -> Dict[str, Any]:
         binance_symbol = self._to_binance_symbol(symbol)
@@ -721,7 +1057,7 @@ class KuCoinDataFetcher:
         df.sort_values("timestamp", inplace=True)
         df.reset_index(drop=True, inplace=True)
         if not df.empty:
-            self._last_prices[symbol] = float(df["close"].iloc[-1])
+            self._last_prices[str(symbol or ACTIVE_SYMBOL).upper()] = float(df["close"].iloc[-1])
         return df
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
@@ -800,8 +1136,8 @@ class KuCoinDataFetcher:
             try:
                 return self._fetch_klines_via_kucoin_rest(symbol, timeframe, start_dt, end_dt)
             except Exception as exc:
-                logger.warning(f"REST klines failed for {symbol} {timeframe}, using synthetic data: {exc}")
-                return self._generate_synthetic_klines(symbol, timeframe, start_dt, end_dt)
+                logger.error("REST klines failed for {} {}: {}", symbol, timeframe, exc)
+                raise RuntimeError("Live market data unavailable") from exc
 
         kline_type = TIMEFRAME_MAP.get(timeframe, timeframe)
         params: Dict[str, Any] = {"symbol": symbol, "kline_type": kline_type}
@@ -825,12 +1161,12 @@ class KuCoinDataFetcher:
             df.sort_values("timestamp", inplace=True)
             df.reset_index(drop=True, inplace=True)
             if not df.empty:
-                self._last_prices[symbol] = float(df["close"].iloc[-1])
+                self._last_prices[str(symbol or ACTIVE_SYMBOL).upper()] = float(df["close"].iloc[-1])
             return df
         except Exception as exc:
             self._maybe_switch_public_mode_from_error(exc=exc)
-            logger.warning(f"fetch_klines failed for {symbol} {timeframe}, using synthetic data: {exc}")
-            return self._generate_synthetic_klines(symbol, timeframe, start_dt, end_dt)
+            logger.error("fetch_klines failed for {} {}: {}", symbol, timeframe, exc)
+            raise RuntimeError("Live market data unavailable") from exc
 
     def fetch_history(
         self,
@@ -868,158 +1204,48 @@ class KuCoinDataFetcher:
     def get_orderbook(self, symbol: str, depth: int = 20) -> Dict[str, Any]:
         """Get current order book."""
         self._assert_xrp_symbol(symbol)
-        symbol_key = str(symbol).upper()
-
-        failures: List[str] = []
-        for attempt in range(1, self._orderbook_retry_attempts + 1):
-            try:
-                orderbook = self._fetch_orderbook_via_kucoin_rest(symbol, depth)
-                self._refresh_status(
-                    symbol_key,
-                    orderbook_source=str(orderbook.get("source", "kucoin_rest_orderbook")),
-                )
-                return orderbook
-            except Exception as exc:
-                self._maybe_switch_public_mode_from_error(exc=exc)
-                failures.append(f"attempt={attempt}: {exc}")
-                if attempt < self._orderbook_retry_attempts:
-                    backoff = min(0.5 * (2 ** (attempt - 1)), 5.0)
-                    time.sleep(backoff)
-
-        try:
-            fallback = self._orderbook_from_ticker(symbol)
-            self._refresh_status(symbol_key, orderbook_source="public_ticker")
-            logger.warning(
-                "Orderbook unavailable for {} after {} attempt(s); using public ticker fallback",
-                symbol,
-                self._orderbook_retry_attempts,
-            )
-            return fallback
-        except Exception as fallback_exc:
-            failures.append(f"public_ticker_fallback_failed: {fallback_exc}")
-
-        if self._allow_synthetic_orderbook:
-            synthetic = self._synthetic_orderbook(symbol, depth)
-            self._refresh_status(symbol_key, orderbook_source="synthetic")
-            logger.error(
-                "Orderbook failed for {}. Synthetic fallback is enabled and will be used. errors={}",
-                symbol,
-                " | ".join(failures),
-            )
-            return synthetic
-
-        self._refresh_status(symbol_key, orderbook_source="unavailable")
-        raise RuntimeError(
-            "Orderbook fetch failed and synthetic fallback is disabled "
-            "(ALLOW_SYNTHETIC_ORDERBOOK=false). "
-            f"symbol={symbol} errors={' | '.join(failures)}"
-        )
+        _ = depth
+        ticker = self.get_ticker(symbol)
+        bid = _as_float(ticker.get("best_bid"), _as_float(ticker.get("price"), 0.0))
+        ask = _as_float(ticker.get("best_ask"), _as_float(ticker.get("price"), 0.0))
+        size = max(0.0, _as_float(ticker.get("size"), 0.0))
+        if bid <= 0 or ask <= 0:
+            self._refresh_status(symbol, orderbook_source="unavailable")
+            raise RuntimeError("Live market data unavailable")
+        orderbook = {
+            "bids": [(bid, size)],
+            "asks": [(ask, size)],
+            "time": _as_float(ticker.get("time"), float(int(time.time() * 1000))),
+            "source": "market_data_service",
+        }
+        self._refresh_status(symbol, orderbook_source="market_data_service")
+        return orderbook
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=5))
     def get_ticker(self, symbol: str) -> Dict[str, Any]:
         """Get current ticker data."""
         self._assert_xrp_symbol(symbol)
-        if self._offline_mode or self.market is None or self._public_only_mode:
-            try:
-                ticker = self._fetch_ticker_via_kucoin_rest(symbol)
-                self._last_prices[symbol] = float(ticker["price"])
-                self._refresh_status(symbol, ticker_source=str(ticker.get("source", "kucoin_rest")))
-                return ticker
-            except Exception as kucoin_exc:
-                logger.warning(f"KuCoin REST ticker failed for {symbol}: {kucoin_exc}")
-                try:
-                    ticker = self._fetch_ticker_via_binance_rest(symbol)
-                    self._last_prices[symbol] = float(ticker["price"])
-                    self._refresh_status(symbol, ticker_source=str(ticker.get("source", "binance_rest")))
-                    return ticker
-                except Exception as binance_exc:
-                    logger.warning(f"Binance REST ticker failed for {symbol}, falling back to cached/synthetic ticker: {binance_exc}")
-                    cached = self._cached_ticker(symbol)
-                    if cached is not None:
-                        self._refresh_status(symbol, ticker_source="last_known")
-                        return cached
-                    ticker = self._synthetic_ticker(symbol)
-                    self._refresh_status(symbol, ticker_source="synthetic")
-                    return ticker
+        symbol_key = str(symbol).upper()
+        if self._is_market_halted(symbol_key):
+            self._refresh_status(symbol_key, ticker_source="unavailable")
+            raise RuntimeError("Live market data unavailable")
 
-        try:
-            t = self.market.get_ticker(symbol)
-            price = _as_float(
-                t.get("price")
-                or t.get("last")
-                or t.get("lastPrice")
-                or t.get("lastTradedPrice")
-                or 0.0,
-                0.0,
-            )
-            if price <= 0:
-                price = _as_float(
-                    t.get("bestAsk")
-                    or t.get("bestBid")
-                    or t.get("bestAskPrice")
-                    or t.get("bestBidPrice")
-                    or t.get("sell")
-                    or t.get("buy")
-                    or 0.0,
-                    self._base_price(symbol),
-                )
+        ticker = self._resolve_live_ticker(symbol_key)
+        if ticker is None:
+            self._refresh_status(symbol_key, ticker_source="unavailable")
+            raise RuntimeError("Live market data unavailable")
 
-            best_bid = _as_float(
-                t.get("bestBid")
-                or t.get("bestBidPrice")
-                or t.get("buy")
-                or t.get("best_bid")
-                or price,
-                price,
-            )
-            best_ask = _as_float(
-                t.get("bestAsk")
-                or t.get("bestAskPrice")
-                or t.get("sell")
-                or t.get("best_ask")
-                or price,
-                price,
-            )
-            if best_bid <= 0:
-                best_bid = price
-            if best_ask <= 0:
-                best_ask = price
+        ticker.setdefault("symbol", symbol_key)
+        ticker.setdefault("exchange", self._market_exchange)
+        ticker.setdefault("source", "market_data_service")
+        self._ingest_market_ticker(ticker)
 
-            self._last_prices[symbol] = price
-            ticker = {
-                "price": price,
-                "best_bid": best_bid,
-                "best_ask": best_ask,
-                "size": _as_float(t.get("size", 0.0), 0.0),
-                "time": _as_float(t.get("time", int(time.time() * 1000)), int(time.time() * 1000)),
-                "source": "kucoin_sdk",
-            }
-            self._refresh_status(symbol, ticker_source="kucoin_sdk")
-            return ticker
-        except Exception as exc:
-            self._maybe_switch_public_mode_from_error(exc=exc)
-            logger.warning(f"SDK ticker failed for {symbol}: {exc}")
-            try:
-                ticker = self._fetch_ticker_via_kucoin_rest(symbol)
-                self._last_prices[symbol] = float(ticker["price"])
-                self._refresh_status(symbol, ticker_source=str(ticker.get("source", "kucoin_rest")))
-                return ticker
-            except Exception as kucoin_exc:
-                logger.warning(f"KuCoin REST ticker failed for {symbol}: {kucoin_exc}")
-                try:
-                    ticker = self._fetch_ticker_via_binance_rest(symbol)
-                    self._last_prices[symbol] = float(ticker["price"])
-                    self._refresh_status(symbol, ticker_source=str(ticker.get("source", "binance_rest")))
-                    return ticker
-                except Exception as binance_exc:
-                    logger.warning(f"Binance REST ticker failed for {symbol}, falling back to cached/synthetic ticker: {binance_exc}")
-                    cached = self._cached_ticker(symbol)
-                    if cached is not None:
-                        self._refresh_status(symbol, ticker_source="last_known")
-                        return cached
-                    ticker = self._synthetic_ticker(symbol)
-                    self._refresh_status(symbol, ticker_source="synthetic")
-                    return ticker
+        self._refresh_status(
+            symbol_key,
+            ticker_source="market_data_service",
+            market_data_source="market_data_service",
+        )
+        return ticker
 
     def get_spread(self, symbol: str) -> Tuple[float, float]:
         """Get bid-ask spread in absolute and percentage terms."""

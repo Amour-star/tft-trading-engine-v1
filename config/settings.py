@@ -27,6 +27,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Symbol is now dynamically set per engine instance via SYMBOL env var.
 ACTIVE_SYMBOL: str = os.getenv("SYMBOL", "XRP-USDT").strip()
+REFERENCE_SYMBOL: str = os.getenv("REFERENCE_SYMBOL", "BTC-USDT").strip().upper()
 # Kept for backward compatibility but no longer used for enforcement.
 XRP_ONLY_SYMBOL = ACTIVE_SYMBOL
 TRADING_UNIVERSE: List[str] = [ACTIVE_SYMBOL]
@@ -97,10 +98,13 @@ class KuCoinConfig:
     require_auth: bool = _env_bool("KUCOIN_REQUIRE_AUTH", False)
     auth_check_on_startup: bool = _env_bool("KUCOIN_AUTH_CHECK_ON_STARTUP", True)
     allow_synthetic_orderbook: bool = _env_bool("ALLOW_SYNTHETIC_ORDERBOOK", False)
+    allow_synthetic_ticker: bool = _env_bool("ALLOW_SYNTHETIC_TICKER", False)
+    allow_synthetic_klines: bool = _env_bool("ALLOW_SYNTHETIC_KLINES", False)
     orderbook_retry_attempts: int = _env_int("ORDERBOOK_RETRY_ATTEMPTS", 3)
     http_retry_attempts: int = _env_int("KUCOIN_HTTP_RETRY_ATTEMPTS", 4)
     http_timeout_seconds: float = _env_float("KUCOIN_HTTP_TIMEOUT_SECONDS", 4.0)
     http_max_backoff_seconds: float = _env_float("KUCOIN_HTTP_MAX_BACKOFF_SECONDS", 8.0)
+    market_data_max_age_seconds: float = _env_float("MARKET_DATA_MAX_AGE_SECONDS", 30.0)
 
     @property
     def base_url(self) -> str:
@@ -114,6 +118,11 @@ class DatabaseConfig:
     database_mode: str = _env("DATABASE_MODE", "SQLITE").strip().upper()
     sqlite_path: str = _env("SQLITE_PATH", str(BASE_DIR / "data" / "tft_engine.db"))
     sqlite_wal_mode: bool = _env_bool("SQLITE_WAL_MODE", True)
+    sqlite_journal_mode_override: str = _env("SQLITE_JOURNAL_MODE", "").strip().upper()
+    sqlite_fallback_journal_mode: str = _env("SQLITE_FALLBACK_JOURNAL_MODE", "").strip().upper()
+    sqlite_pool_size: int = _env_int("SQLITE_POOL_SIZE", 8)
+    sqlite_max_overflow: int = _env_int("SQLITE_MAX_OVERFLOW", 16)
+    sqlite_pool_timeout_seconds: float = _env_float("SQLITE_POOL_TIMEOUT_SECONDS", 30.0)
     host: str = _env("POSTGRES_HOST", "localhost")
     port: int = _env_int("POSTGRES_PORT", 5432)
     db: str = _env("POSTGRES_DB", "tft_trading")
@@ -127,10 +136,31 @@ class DatabaseConfig:
             raise ValueError(
                 f"Unknown DATABASE_MODE '{self.database_mode}'. Expected SQLITE or POSTGRES."
             )
+        valid_journal_modes = {"WAL", "DELETE", "TRUNCATE", "PERSIST", "MEMORY", "OFF"}
+        if self.sqlite_journal_mode_override and self.sqlite_journal_mode_override not in valid_journal_modes:
+            raise ValueError(
+                "Unknown SQLITE_JOURNAL_MODE "
+                f"'{self.sqlite_journal_mode_override}'. Expected one of {sorted(valid_journal_modes)}."
+            )
+        if self.sqlite_fallback_journal_mode and self.sqlite_fallback_journal_mode not in valid_journal_modes:
+            raise ValueError(
+                "Unknown SQLITE_FALLBACK_JOURNAL_MODE "
+                f"'{self.sqlite_fallback_journal_mode}'. Expected one of {sorted(valid_journal_modes)}."
+            )
+
+    @property
+    def sqlite_journal_mode(self) -> str:
+        if self.sqlite_journal_mode_override:
+            return self.sqlite_journal_mode_override
+        return "WAL" if self.sqlite_wal_mode else "DELETE"
 
     @property
     def sqlite_resolved_path(self) -> Path:
         path = Path(self.sqlite_path)
+        if os.name == "nt":
+            normalized = self.sqlite_path.replace("\\", "/").strip()
+            if normalized.startswith("/app/"):
+                path = (BASE_DIR / normalized.removeprefix("/app/")).resolve()
         if not path.is_absolute():
             path = (BASE_DIR / path).resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -166,6 +196,7 @@ class TradingConfig:
     paper_fee_rate: float = _env_float("PAPER_FEE_RATE", 0.001)
     paper_slippage_bps: float = _env_float("PAPER_SLIPPAGE_BPS", 0.0)
     paper_db_path: str = _env("PAPER_DB_PATH", str(BASE_DIR / "data" / "paper_trading.db"))
+    paper_db_journal_mode: str = _env("PAPER_DB_JOURNAL_MODE", "DELETE").strip().upper()
     paper_require_live_price: bool = _env_bool("PAPER_REQUIRE_LIVE_PRICE", True)
     spot_only_mode: bool = _env_bool("SPOT_ONLY_MODE", True)
     max_open_trades: int = _env_int("MAX_OPEN_TRADES", 3)
@@ -192,6 +223,12 @@ class TradingConfig:
             raise ValueError("MAX_OPEN_TRADES must be >= 1")
         if self.max_spread_pct <= 0:
             raise ValueError("MAX_SPREAD_PCT must be > 0")
+        valid_journal_modes = {"WAL", "DELETE", "TRUNCATE", "PERSIST", "MEMORY", "OFF"}
+        if self.paper_db_journal_mode not in valid_journal_modes:
+            raise ValueError(
+                "Unknown PAPER_DB_JOURNAL_MODE "
+                f"'{self.paper_db_journal_mode}'. Expected one of {sorted(valid_journal_modes)}."
+            )
 
     @property
     def paper_trading(self) -> bool:
@@ -279,6 +316,19 @@ class GovernanceConfig:
     output_cost_per_1k_tokens: float = _env_float("LLM_COST_OUTPUT_PER_1K_TOKENS", 0.075)
 
 
+@dataclass(frozen=True)
+class ResearchConfig:
+    enabled: bool = _env_bool("RESEARCH_ENABLED", True)
+    candidate_count: int = _env_int("RESEARCH_CANDIDATE_COUNT", 1000)
+    top_percentile: float = _env_float("RESEARCH_TOP_PERCENTILE", 0.05)
+    train_fraction: float = _env_float("RESEARCH_TRAIN_FRACTION", 0.65)
+    test_fraction: float = _env_float("RESEARCH_TEST_FRACTION", 0.20)
+    max_walk_forward_folds: int = _env_int("RESEARCH_MAX_WALK_FORWARD_FOLDS", 3)
+    loop_sleep_seconds: float = _env_float("RESEARCH_LOOP_SLEEP_SECONDS", 900.0)
+    deployment_refresh_seconds: float = _env_float("RESEARCH_DEPLOYMENT_REFRESH_SECONDS", 30.0)
+    timeframe: str = _env("RESEARCH_TIMEFRAME", "15min")
+
+
 # ---------------------------------------------------------------------------
 # Master config
 # ---------------------------------------------------------------------------
@@ -295,6 +345,7 @@ class Settings:
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
     governance: GovernanceConfig = field(default_factory=GovernanceConfig)
+    research: ResearchConfig = field(default_factory=ResearchConfig)
     log_level: str = _env("LOG_LEVEL", "INFO")
     log_dir: Path = Path(_env("LOG_DIR", str(BASE_DIR / "logs")))
 

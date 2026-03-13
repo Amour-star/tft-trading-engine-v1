@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import sqlite3
 import time
-import shutil
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from docker import DockerClient
@@ -19,6 +18,7 @@ CHECK_INTERVAL_MINUTES = 30
 NO_TRADE_THRESHOLD_HOURS = 6
 REPEATED_FAILURE_THRESHOLD = 2
 MAX_TFT_RETRIES = 1
+NON_RESTARTABLE_ISSUES = {"No trades for > 6 hours"}
 
 ENGINE_NAMES: Dict[str, List[str]] = {
     "btc": ["tft-engine-btc", "tft-trading-engine-engine-btc-1"],
@@ -28,9 +28,8 @@ ENGINE_NAMES: Dict[str, List[str]] = {
 }
 
 ERROR_PATTERNS = [
-    "CRITICAL",
-    "Model load failed",
-    "CUDA error",
+    "unable to open database file",
+    "database disk image is malformed",
     "Out of memory",
     "EMERGENCY_CLEANUP_FAILED",
 ]
@@ -56,14 +55,21 @@ class EngineMonitor:
             try:
                 result = self._check_symbol(symbol)
                 if result.issues:
-                    self.failure_counts[symbol] += 1
+                    restartable_issues = [
+                        issue for issue in result.issues if issue not in NON_RESTARTABLE_ISSUES
+                    ]
+                    event = "issues_detected" if restartable_issues else "warning_detected"
                     self._write_report(
-                        "issues_detected",
+                        event,
                         f"{symbol} ({result.container_name}): {result.issues}",
                     )
-                    self._restart_container(result.container_name)
-                    if self.failure_counts[symbol] >= REPEATED_FAILURE_THRESHOLD:
-                        self._disable_tft_for_symbol(symbol, result.issues)
+                    if restartable_issues:
+                        self.failure_counts[symbol] += 1
+                        self._restart_container(result.container_name)
+                        if self.failure_counts[symbol] >= REPEATED_FAILURE_THRESHOLD:
+                            self._disable_tft_for_symbol(symbol, restartable_issues)
+                    else:
+                        self.failure_counts[symbol] = 0
                 else:
                     self.failure_counts[symbol] = 0
                     self._write_report(
@@ -85,18 +91,26 @@ class EngineMonitor:
             )
 
         issues: List[str] = []
+        if hasattr(container, "reload"):
+            try:
+                container.reload()
+            except DockerException:
+                pass
         status = (container.status or "").lower()
         if status != "running":
             issues.append("Engine not running")
 
+        health_status = self._container_health_status(container)
         since_dt = datetime.now(timezone.utc) - timedelta(minutes=CHECK_INTERVAL_MINUTES)
         log_text = self._get_container_logs(container.name, since_dt)
         logs_checked = len(log_text.splitlines()) if log_text else 0
-        for pattern in ERROR_PATTERNS:
-            if pattern in log_text:
-                issues.append(f"log_match:{pattern}")
+        if health_status != "healthy":
+            log_text_lower = log_text.lower()
+            for pattern in ERROR_PATTERNS:
+                if pattern.lower() in log_text_lower:
+                    issues.append(f"log_match:{pattern}")
 
-        no_trade_issue = self._no_trade_issue(symbol)
+        no_trade_issue = self._no_trade_issue(symbol, container)
         if no_trade_issue:
             issues.append(no_trade_issue)
 
@@ -106,6 +120,16 @@ class EngineMonitor:
             issues=issues,
             logs_checked=logs_checked,
         )
+
+    @staticmethod
+    def _container_health_status(container) -> str:
+        try:
+            state = getattr(container, "attrs", {}).get("State", {})
+            health = state.get("Health") or {}
+            status = str(health.get("Status", "")).strip().lower()
+            return status or "none"
+        except Exception:
+            return "none"
 
     def _resolve_container(self, symbol: str):
         for name in ENGINE_NAMES[symbol]:
@@ -126,14 +150,16 @@ class EngineMonitor:
             self._write_report("log_read_error", f"{container_name}: {exc}")
             return ""
 
-    def _no_trade_issue(self, symbol: str) -> Optional[str]:
-        self._ensure_trades_db_alias(symbol)
+    def _no_trade_issue(self, symbol: str, container=None) -> Optional[str]:
+        now_utc = datetime.now(timezone.utc)
         db_candidates = [
             STATE_ROOT / symbol / "trades.db",
             STATE_ROOT / symbol / "tft_engine.db",
         ]
         db_path = next((path for path in db_candidates if path.exists()), None)
         if db_path is None:
+            if self._is_recent_symbol_start(symbol, container, now_utc):
+                return None
             return "No trades for > 6 hours"
 
         try:
@@ -142,12 +168,16 @@ class EngineMonitor:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT MAX(COALESCE(exit_time, entry_time)) AS last_trade_ts
+                SELECT
+                    COUNT(*) AS trade_count,
+                    MAX(COALESCE(exit_time, entry_time)) AS last_trade_ts
                 FROM trades
                 """
             )
             row = cursor.fetchone()
         except Exception:
+            if self._is_recent_symbol_start(symbol, container, now_utc):
+                return None
             return "No trades for > 6 hours"
         finally:
             try:
@@ -155,41 +185,71 @@ class EngineMonitor:
             except Exception:
                 pass
 
+        trade_count = 0 if row is None else int(row["trade_count"] or 0)
+        if trade_count <= 0:
+            if self._is_recent_symbol_start(symbol, container, now_utc):
+                return None
+            return "No trades for > 6 hours"
+
         last_trade_ts = None if row is None else row["last_trade_ts"]
         if not last_trade_ts:
+            if self._is_recent_symbol_start(symbol, container, now_utc):
+                return None
             return "No trades for > 6 hours"
 
         parsed_ts = self._parse_timestamp(str(last_trade_ts))
         if parsed_ts is None:
+            if self._is_recent_symbol_start(symbol, container, now_utc):
+                return None
             return "No trades for > 6 hours"
 
-        age = datetime.now(timezone.utc) - parsed_ts
+        age = now_utc - parsed_ts
         if age > timedelta(hours=NO_TRADE_THRESHOLD_HOURS):
             return "No trades for > 6 hours"
         return None
 
-    def _ensure_trades_db_alias(self, symbol: str) -> None:
+    def _is_recent_symbol_start(self, symbol: str, container, now_utc: datetime) -> bool:
+        latest_reference = self._latest_symbol_reference(symbol, container)
+        if latest_reference is None:
+            return False
+        return (now_utc - latest_reference) <= timedelta(hours=NO_TRADE_THRESHOLD_HOURS)
+
+    def _latest_symbol_reference(self, symbol: str, container) -> Optional[datetime]:
         symbol_state = STATE_ROOT / symbol
-        source = symbol_state / "tft_engine.db"
-        target = symbol_state / "trades.db"
-        if not source.exists():
-            return
-
-        if target.exists():
+        candidates = [symbol_state, symbol_state / "tft_engine.db", symbol_state / "trades.db"]
+        references: List[datetime] = []
+        started_at = self._container_started_at(container)
+        if started_at is not None:
+            references.append(started_at)
+        for path in candidates:
+            if not path.exists():
+                continue
             try:
-                _ = target.stat()
-                return
-            except Exception:
-                try:
-                    target.unlink(missing_ok=True)
-                except Exception:
-                    return
+                references.append(datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc))
+            except OSError:
+                continue
+        if not references:
+            return None
+        return max(references)
 
+    def _container_started_at(self, container) -> Optional[datetime]:
+        if container is None:
+            return None
         try:
-            shutil.copy2(source, target)
-            self._write_report("trades_db_copied", f"{symbol}: {target} from {source}")
-        except Exception as exc:
-            self._write_report("trades_db_alias_failed", f"{symbol}: {exc}")
+            state = getattr(container, "attrs", {}).get("State", {})
+            raw = str(state.get("StartedAt", "")).strip()
+            if not raw:
+                return None
+            if raw.endswith("Z"):
+                raw = raw[:-1]
+            if "." in raw:
+                raw = raw.split(".", 1)[0]
+            parsed = datetime.fromisoformat(raw)
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except Exception:
+            return None
 
     @staticmethod
     def _parse_timestamp(raw: str) -> Optional[datetime]:

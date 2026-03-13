@@ -46,6 +46,8 @@ COPY --from=builder /opt/venv /opt/venv
 
 COPY . /app
 
+ENV PYTHONPATH=/app
+
 RUN adduser --disabled-password --gecos "" --home /home/appuser --uid 10001 appuser && \
     mkdir -p /app/logs /app/data /app/state /app/saved_models && \
     chown -R appuser:appuser /app/logs /app/data /app/state /app/saved_models

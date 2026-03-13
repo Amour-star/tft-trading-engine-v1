@@ -5,6 +5,7 @@ Loads historical data, trains, validates, and saves the model.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,23 @@ from models.tft_model import train_tft
 from utils.logging import setup_logging
 
 DATA_DIR = ROOT / "data" / "historical"
+
+
+def _default_required_symbols() -> list[str]:
+    raw = os.getenv("MARKET_DATA_SYMBOLS", "").strip()
+    if raw:
+        parsed: list[str] = []
+        for token in raw.split(","):
+            symbol = token.strip().upper().replace("/", "-")
+            if not symbol:
+                continue
+            if "-" not in symbol:
+                symbol = f"{symbol}-USDT"
+            parsed.append(symbol)
+        deduped = list(dict.fromkeys(parsed))
+        if deduped:
+            return deduped
+    return [XRP_ONLY_SYMBOL]
 
 
 def main() -> None:
@@ -44,7 +62,7 @@ def main() -> None:
     parser.add_argument(
         "--required-symbols",
         nargs="+",
-        default=[XRP_ONLY_SYMBOL],
+        default=_default_required_symbols(),
         help="Symbols that must be present in training data and model vocabulary",
     )
     args = parser.parse_args()

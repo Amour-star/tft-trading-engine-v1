@@ -3,6 +3,7 @@ Hard deterministic trade validator for paper and live execution.
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Dict
 
 from loguru import logger
@@ -20,11 +21,16 @@ def validate_trade(trade_data: Dict[str, Any], account_balance: float) -> Dict[s
     mark_price = float(trade_data.get("mark_price") or 0.0)
     quantity = float(trade_data.get("quantity") or 0.0)
     confidence = float(trade_data.get("confidence") or 0.0)
+    signal_score = float(trade_data.get("signal_score") or 0.0)
+    expected_edge_pct = float(trade_data.get("expected_edge_pct") or 0.0)
+    estimated_fee_drag_pct = float(trade_data.get("estimated_fee_drag_pct") or 0.0)
     risk_per_trade = float(
         trade_data.get("risk_per_trade", settings.trading.risk_per_trade or 0.0)
     )
     full_balance_mode = bool(trade_data.get("full_balance_mode", False))
-    default_position_fraction = 0.99 if full_balance_mode else 0.20
+    default_position_fraction = 0.99 if full_balance_mode else float(
+        os.getenv("POSITION_MAX_BALANCE_FRACTION", "0.50")
+    )
     max_position_fraction = float(
         trade_data.get("max_position_fraction", default_position_fraction)
     )
@@ -73,9 +79,34 @@ def validate_trade(trade_data: Dict[str, Any], account_balance: float) -> Dict[s
         )
         return {"valid": False, "reason": reason}
 
+    min_signal_score = max(0.45, required_confidence - 0.05)
+    if signal_score > 0.0 and signal_score < min_signal_score:
+        reason = "Signal score below execution threshold."
+        logger.warning(
+            f"{VALIDATION_TAG} {symbol} rejected: {reason} "
+            f"(signal_score={signal_score:.3f} threshold={min_signal_score:.3f})"
+        )
+        return {"valid": False, "reason": reason}
+
+    if expected_edge_pct != 0.0 or estimated_fee_drag_pct != 0.0:
+        if expected_edge_pct <= max(0.0, estimated_fee_drag_pct):
+            reason = "Expected edge does not clear fees and slippage."
+            logger.warning(
+                f"{VALIDATION_TAG} {symbol} rejected: {reason} "
+                f"(edge={expected_edge_pct:.6f} costs={estimated_fee_drag_pct:.6f})"
+            )
+            return {"valid": False, "reason": reason}
+
     risk_amount = account_balance * risk_per_trade
     if entry_price <= 0 or risk_amount <= 0:
         reason = "Risk sizing could not be computed."
+        logger.error(f"{VALIDATION_TAG} {symbol} rejected: {reason}")
+        return {"valid": False, "reason": reason}
+
+    stop_price = float(trade_data.get("stop_price") or 0.0)
+    stop_distance = abs(entry_price - stop_price)
+    if stop_distance <= 0:
+        reason = "Stop price is required for risk sizing."
         logger.error(f"{VALIDATION_TAG} {symbol} rejected: {reason}")
         return {"valid": False, "reason": reason}
 
@@ -89,7 +120,7 @@ def validate_trade(trade_data: Dict[str, Any], account_balance: float) -> Dict[s
             )
             return {"valid": False, "reason": reason}
     else:
-        risk_quantity = risk_amount / entry_price
+        risk_quantity = risk_amount / stop_distance
         if quantity > risk_quantity or quantity > max_quantity:
             reason = "Quantity exceeds risk or position caps."
             logger.error(

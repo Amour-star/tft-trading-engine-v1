@@ -5,6 +5,8 @@ Provides REST endpoints for monitoring, control, and data access.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import ast
+import json
 import math
 import os
 from pathlib import Path
@@ -18,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, inspect, text
+import redis
 
 from config.settings import ACTIVE_SYMBOL, settings
 from data.database import (
@@ -37,6 +40,7 @@ from data.database import (
     Statistics,
     StrategyParameter,
     Trade,
+    get_database_runtime_info,
     get_session,
 )
 from data.fetcher import KuCoinDataFetcher
@@ -46,7 +50,7 @@ from engine.strategy_evolution import StrategyEvolutionEngine
 from engine.safety import SafetyManager
 from execution.executor import create_executor
 from execution.monitor import PositionMonitor
-from execution.paper_executor import load_paper_snapshot
+from execution.paper_executor import configure_paper_db_connection, load_paper_snapshot
 from models.rl_position_manager import PPOPositionManager
 from models.tft_model import TFTPredictor
 from risk.safety_layer import request_kill_switch_rebaseline
@@ -98,6 +102,15 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _resolve_threshold_value(payload: Dict[str, Any], default: float = 0.0) -> float:
+    threshold = payload.get("threshold_after_scaling")
+    if threshold is None:
+        threshold = payload.get("threshold")
+    if threshold is None:
+        threshold = payload.get("adaptive_threshold")
+    return _safe_float(threshold, default)
+
+
 def _display_metric(value: Any, *, available: bool, precision: int = 4) -> str:
     if not available:
         return "N/A"
@@ -106,6 +119,91 @@ def _display_metric(value: Any, *, available: bool, precision: int = 4) -> str:
 
 def _is_symbol_scoped_runtime() -> bool:
     return not _quant_engine_enabled()
+
+
+def _saved_models_root() -> Path:
+    return Path(__file__).resolve().parent.parent / "saved_models"
+
+
+def _parse_validation_loss_from_checkpoint_name(model_dir: Path) -> Optional[float]:
+    for ckpt_path in sorted(model_dir.glob("best-*.ckpt"), key=lambda path: path.stat().st_mtime, reverse=True):
+        marker = "val_loss="
+        name = ckpt_path.name
+        if marker not in name:
+            continue
+        tail = name.split(marker, 1)[1]
+        value = tail.split(".ckpt", 1)[0]
+        if not value:
+            return None
+        parsed = _safe_float(value, default=0.0)
+        return parsed if math.isfinite(parsed) else None
+    return None
+
+
+def _load_model_artifact_metadata(model_version: Optional[str]) -> Optional[Dict[str, Any]]:
+    version = str(model_version or "").strip()
+    if not version:
+        return None
+
+    model_dir = _saved_models_root() / version
+    if not model_dir.exists() or not model_dir.is_dir():
+        return None
+
+    payload: Dict[str, Any] = {
+        "version": version,
+        "trained_at": None,
+        "validation_loss": None,
+        "sharpe_ratio": None,
+        "max_drawdown": None,
+        "accuracy": None,
+    }
+
+    metadata_path = model_dir / "metadata.json"
+    if metadata_path.exists():
+        try:
+            raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                payload.update(
+                    {
+                        "trained_at": raw.get("trained_at"),
+                        "validation_loss": raw.get("validation_loss"),
+                        "sharpe_ratio": raw.get("sharpe_ratio"),
+                        "max_drawdown": raw.get("max_drawdown"),
+                        "accuracy": raw.get("accuracy"),
+                    }
+                )
+        except Exception as exc:
+            logger.debug("Could not parse model metadata file {}: {}", metadata_path, exc)
+
+    info_path = model_dir / "info.txt"
+    if info_path.exists():
+        try:
+            for raw_line in info_path.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if line.startswith("trained_at:") and not payload.get("trained_at"):
+                    payload["trained_at"] = line.split(":", 1)[1].strip()
+                elif line.startswith("metrics:"):
+                    metrics_raw = line.split(":", 1)[1].strip()
+                    metrics = ast.literal_eval(metrics_raw)
+                    if isinstance(metrics, dict):
+                        payload["validation_loss"] = payload.get("validation_loss", metrics.get("validation_loss"))
+                        payload["sharpe_ratio"] = payload.get("sharpe_ratio", metrics.get("sharpe_ratio"))
+                        payload["max_drawdown"] = payload.get("max_drawdown", metrics.get("max_drawdown"))
+                        payload["accuracy"] = payload.get("accuracy", metrics.get("accuracy"))
+        except Exception as exc:
+            logger.debug("Could not parse model info file {}: {}", info_path, exc)
+
+    if payload.get("validation_loss") is None:
+        payload["validation_loss"] = _parse_validation_loss_from_checkpoint_name(model_dir)
+
+    if not payload.get("trained_at"):
+        try:
+            latest_file = max(model_dir.glob("*"), key=lambda path: path.stat().st_mtime)
+            payload["trained_at"] = datetime.utcfromtimestamp(latest_file.stat().st_mtime).isoformat()
+        except Exception:
+            payload["trained_at"] = None
+
+    return payload
 
 
 def _normalized_symbol(symbol: Optional[str]) -> str:
@@ -127,6 +225,13 @@ def _load_engine_state_value(session, key: str, default: Any = None) -> Any:
     return row.value.get("value", default)
 
 
+def _load_market_data_state(session) -> Dict[str, Any]:
+    market_data_state = _load_engine_state_value(session, "market_data_status", {}) or {}
+    if not isinstance(market_data_state, dict):
+        market_data_state = {}
+    return market_data_state
+
+
 class StatusResponse(BaseModel):
     mode: str
     engine_running: bool
@@ -136,12 +241,19 @@ class StatusResponse(BaseModel):
     governance_enabled: bool
     paused: bool
     killed: bool
-    market_data_source: str = "public_ticker"
+    market_data_source: str = "market_data_service"
     ticker_source: str = "unknown"
     orderbook_source: str = "unknown"
     synthetic_active: bool = False
+    market_data_ready: bool = False
+    data_age_seconds: Optional[float] = None
     market_data_warning: Optional[str] = None
+    db_backend: str = "unknown"
+    db_path: Optional[str] = None
+    db_journal_mode: Optional[str] = None
+    db_storage_ok: bool = False
     credentials_present: bool = False
+    credentials_valid: bool = False
     auth_required: bool = False
     auth_valid: Optional[bool] = None
     auth_error: str = ""
@@ -185,8 +297,11 @@ class TradeResponse(BaseModel):
     gov_adjust: float = 0.0
     final_ai_score: float = 0.0
     governance_code: Optional[str] = None
+    model_version: Optional[str] = None
     status: str
     ai_reasoning: Optional[str]
+    decision_context: Optional[Dict[str, Any]] = None
+    exit_context: Optional[Dict[str, Any]] = None
 
 
 class AIScoreResponse(BaseModel):
@@ -262,9 +377,7 @@ def _reset_paper_sqlite(initial_balance: float) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), timeout=30, check_same_thread=False)
     try:
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA busy_timeout=30000;")
+        configure_paper_db_connection(conn, db_path)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS state (
@@ -331,11 +444,69 @@ def health():
     finally:
         session.close()
 
+    db_runtime = get_database_runtime_info()
+
     return {
         "status": "ok",
         "engine_running": engine_running,
         "mode": settings.trading.trading_mode.lower(),
         "device": device,
+        "db_backend": str(db_runtime.get("backend") or "unknown"),
+        "db_path": db_runtime.get("sqlite_path"),
+        "db_journal_mode": db_runtime.get("sqlite_effective_journal_mode")
+        or db_runtime.get("sqlite_requested_journal_mode"),
+        "db_storage_ok": bool(
+            db_runtime.get("backend") != "sqlite"
+            or (
+                db_runtime.get("sqlite_parent_writable") is True
+                and db_runtime.get("sqlite_file_writable") is True
+            )
+        ),
+    }
+
+
+@app.get("/health/market-data")
+def health_market_data():
+    payload: Dict[str, Any] = {}
+    key = os.getenv("MARKET_HEALTH_KEY", "market:health:market-data").strip() or "market:health:market-data"
+    try:
+        client = redis.Redis(
+            host=settings.redis.host,
+            port=int(settings.redis.port),
+            decode_responses=True,
+            socket_connect_timeout=1.0,
+            socket_timeout=1.0,
+        )
+        raw = client.get(key)
+        if raw:
+            parsed = json.loads(str(raw))
+            if isinstance(parsed, dict):
+                payload = parsed
+    except Exception as exc:
+        logger.debug("Failed to load market-data health from redis key {}: {}", key, exc)
+
+    if payload:
+        return {
+            "exchange": str(payload.get("exchange", "kucoin")),
+            "ws_active": bool(payload.get("ws_active", False)),
+            "symbols": [str(s) for s in (payload.get("symbols") or [])],
+            "prices_recent": bool(payload.get("prices_recent", False)),
+            "missing_symbols": [str(s) for s in (payload.get("missing_symbols") or [])],
+            "timestamp": payload.get("timestamp"),
+        }
+
+    session = get_session()
+    try:
+        state = _load_market_data_state(session)
+    finally:
+        session.close()
+    return {
+        "exchange": str(state.get("exchange", "kucoin")),
+        "ws_active": bool(state.get("market_data_ready", False)),
+        "symbols": [ACTIVE_SYMBOL],
+        "prices_recent": bool(state.get("market_data_ready", False)),
+        "missing_symbols": [],
+        "timestamp": datetime.utcnow().isoformat(),
     }
 
 
@@ -345,6 +516,7 @@ def get_status():
     try:
         mode = settings.trading.trading_mode.upper()
         quant_enabled = _quant_engine_enabled()
+        db_runtime = get_database_runtime_info()
 
         running_state = session.query(EngineState).filter(EngineState.key == "running").first()
         engine_running = bool(running_state and running_state.value.get("value", False))
@@ -355,18 +527,29 @@ def get_status():
         killed_state = session.query(EngineState).filter(EngineState.key == "killed").first()
         killed = bool(killed_state and killed_state.value.get("value", False))
         accept_new_trades = bool(_load_engine_state_value(session, "accept_new_trades", True))
-        market_data_state = _load_engine_state_value(session, "market_data_status", {}) or {}
-        if not isinstance(market_data_state, dict):
-            market_data_state = {}
-        market_data_source = str(market_data_state.get("market_data_source", "public_ticker"))
+        market_data_state = _load_market_data_state(session)
+        market_data_source = str(market_data_state.get("market_data_source", "market_data_service"))
         ticker_source = str(market_data_state.get("ticker_source", "unknown"))
         orderbook_source = str(market_data_state.get("orderbook_source", "unknown"))
         synthetic_active = bool(market_data_state.get("synthetic_active", False))
-        market_data_warning = ""
+        market_data_ready = bool(market_data_state.get("market_data_ready", False))
+        data_age_seconds = market_data_state.get("data_age_seconds")
+        credentials_present = bool(market_data_state.get("credentials_present", False))
+        credentials_valid = bool(market_data_state.get("credentials_valid", False))
+        auth_required = bool(market_data_state.get("auth_required", False))
+        status_trading_enabled = bool(
+            market_data_state.get(
+                "trading_enabled",
+                market_data_ready and (not auth_required or credentials_valid),
+            )
+        )
+        market_data_warning = str(market_data_state.get("market_data_warning", "") or "")
         if synthetic_active:
             market_data_warning = (
                 "Synthetic market data is active. Trading values may be unrealistic until real feeds recover."
             )
+        elif not market_data_ready and not market_data_warning:
+            market_data_warning = "Market data is not ready. Trading is paused until live pricing recovers."
 
         open_trade_query = session.query(Trade).filter(Trade.status == "open")
         open_trade_query = _apply_trade_symbol_scope(open_trade_query)
@@ -493,8 +676,9 @@ def get_status():
                 .order_by(desc(SignalRecord.timestamp), desc(SignalRecord.id))
                 .first()
             )
-            threshold_after_scaling = _safe_float(
-                ((latest_signal.payload or {}).get("threshold") if latest_signal else None),
+            signal_payload = (latest_signal.payload or {}) if latest_signal else {}
+            threshold_after_scaling = _resolve_threshold_value(
+                signal_payload if isinstance(signal_payload, dict) else {},
                 _safe_float(settings.trading.confidence_threshold, 0.0),
             )
             latest_regime = None
@@ -573,7 +757,7 @@ def get_status():
         return StatusResponse(
             mode=mode,
             engine_running=engine_running,
-            trading_enabled=bool(settings.trading.trading_enabled and accept_new_trades),
+            trading_enabled=bool(settings.trading.trading_enabled and accept_new_trades and status_trading_enabled),
             accept_new_trades=accept_new_trades,
             ai_enabled=settings.runtime.ai_enabled,
             governance_enabled=settings.governance.llm_enabled,
@@ -583,9 +767,29 @@ def get_status():
             ticker_source=ticker_source,
             orderbook_source=orderbook_source,
             synthetic_active=synthetic_active,
+            market_data_ready=market_data_ready,
+            data_age_seconds=(
+                _safe_float(data_age_seconds, 0.0)
+                if data_age_seconds is not None
+                else None
+            ),
             market_data_warning=market_data_warning or None,
-            credentials_present=bool(market_data_state.get("credentials_present", False)),
-            auth_required=bool(market_data_state.get("auth_required", False)),
+            db_backend=str(db_runtime.get("backend") or "unknown"),
+            db_path=db_runtime.get("sqlite_path"),
+            db_journal_mode=(
+                db_runtime.get("sqlite_effective_journal_mode")
+                or db_runtime.get("sqlite_requested_journal_mode")
+            ),
+            db_storage_ok=bool(
+                db_runtime.get("backend") != "sqlite"
+                or (
+                    db_runtime.get("sqlite_parent_writable") is True
+                    and db_runtime.get("sqlite_file_writable") is True
+                )
+            ),
+            credentials_present=credentials_present,
+            credentials_valid=credentials_valid,
+            auth_required=auth_required,
             auth_valid=market_data_state.get("auth_valid"),
             auth_error=str(market_data_state.get("auth_error", "")),
             balance=balance,
@@ -603,6 +807,56 @@ def get_status():
             latest_regime=latest_regime,
             universe=universe,
         )
+    finally:
+        session.close()
+
+
+@app.get("/market/status")
+def get_market_status():
+    session = get_session()
+    try:
+        state = _load_market_data_state(session)
+        return {
+            "exchange": str(state.get("exchange", "kucoin")),
+            "source": str(state.get("source", "market_data_service")),
+            "market_data_source": str(state.get("market_data_source", "market_data_service")),
+            "latency_ms": _safe_float(state.get("latency_ms"), 0.0),
+            "last_update": state.get("last_update") or state.get("last_price_timestamp"),
+            "market_data_ready": bool(state.get("market_data_ready", False)),
+            "warning": str(state.get("market_data_warning", "") or ""),
+        }
+    finally:
+        session.close()
+
+
+@app.get("/market/source")
+def get_market_source():
+    session = get_session()
+    try:
+        state = _load_market_data_state(session)
+        return {
+            "exchange": str(state.get("exchange", "kucoin")),
+            "source": str(state.get("source", "market_data_service")),
+            "market_data_source": str(state.get("market_data_source", "market_data_service")),
+            "ticker_source": str(state.get("ticker_source", "unknown")),
+            "orderbook_source": str(state.get("orderbook_source", "unknown")),
+            "last_update": state.get("last_update") or state.get("last_price_timestamp"),
+        }
+    finally:
+        session.close()
+
+
+@app.get("/market/latency")
+def get_market_latency():
+    session = get_session()
+    try:
+        state = _load_market_data_state(session)
+        return {
+            "exchange": str(state.get("exchange", "kucoin")),
+            "source": str(state.get("source", "market_data_service")),
+            "latency_ms": _safe_float(state.get("latency_ms"), 0.0),
+            "last_update": state.get("last_update") or state.get("last_price_timestamp"),
+        }
     finally:
         session.close()
 
@@ -640,8 +894,11 @@ def get_trades(limit: int = 50, status: Optional[str] = None, symbol: Optional[s
                 gov_adjust=_safe_float(t.gov_adjust, 0.0),
                 final_ai_score=_safe_float(t.final_ai_score, 0.0),
                 governance_code=t.governance_code,
+                model_version=t.model_version,
                 status=t.status or "open",
                 ai_reasoning=t.ai_reasoning,
+                decision_context=((t.prediction or {}).get("decision_context") if isinstance(t.prediction, dict) else None),
+                exit_context=((t.prediction or {}).get("exit_context") if isinstance(t.prediction, dict) else None),
             )
             for t in trades
         ]
@@ -791,7 +1048,7 @@ def get_performance():
         "win_rate": _safe_float(stats_payload.get("win_rate"), 0.0),
         "total_trades": _safe_int(stats_payload.get("total_trades"), 0),
         "open_positions": _safe_int(len(positions_payload), 0),
-        "threshold_after_scaling": _safe_float(status_payload.get("threshold_after_scaling"), 0.0),
+        "threshold_after_scaling": _resolve_threshold_value(status_payload, 0.0),
         "sharpe_ratio": _safe_float(metrics_payload.get("sharpe_ratio"), 0.0),
         "sortino_ratio": _safe_float(metrics_payload.get("sortino_ratio"), 0.0),
         "max_drawdown": _safe_float(metrics_payload.get("max_drawdown"), 0.0),
@@ -1166,33 +1423,36 @@ def get_model_info():
             .order_by(desc(ModelMetric.trained_at))
             .first()
         )
+        artifact_metadata = _load_model_artifact_metadata(active_model_name)
         if not active:
             latest_pred = (
                 session.query(Prediction)
+                .filter(Prediction.pair == ACTIVE_SYMBOL)
                 .order_by(desc(Prediction.timestamp), desc(Prediction.id))
                 .first()
             )
             fallback_version = active_model_name or (latest_pred.model_version if latest_pred else None)
             if not fallback_version:
                 return {"active_model": None}
+            artifact_metadata = artifact_metadata or _load_model_artifact_metadata(fallback_version)
             return {
                 "active_model": {
-                    "version": str(fallback_version),
-                    "trained_at": None,
-                    "validation_loss": None,
-                    "sharpe_ratio": None,
-                    "max_drawdown": None,
-                    "accuracy": None,
+                    "version": str((artifact_metadata or {}).get("version") or fallback_version),
+                    "trained_at": (artifact_metadata or {}).get("trained_at"),
+                    "validation_loss": (artifact_metadata or {}).get("validation_loss"),
+                    "sharpe_ratio": (artifact_metadata or {}).get("sharpe_ratio"),
+                    "max_drawdown": (artifact_metadata or {}).get("max_drawdown"),
+                    "accuracy": (artifact_metadata or {}).get("accuracy"),
                 }
             }
         return {
             "active_model": {
                 "version": active_model_name or active.model_version,
-                "trained_at": active.trained_at.isoformat(),
-                "validation_loss": active.validation_loss,
-                "sharpe_ratio": active.sharpe_ratio,
-                "max_drawdown": active.max_drawdown,
-                "accuracy": active.accuracy,
+                "trained_at": active.trained_at.isoformat() if active.trained_at else (artifact_metadata or {}).get("trained_at"),
+                "validation_loss": active.validation_loss if active.validation_loss is not None else (artifact_metadata or {}).get("validation_loss"),
+                "sharpe_ratio": active.sharpe_ratio if active.sharpe_ratio is not None else (artifact_metadata or {}).get("sharpe_ratio"),
+                "max_drawdown": active.max_drawdown if active.max_drawdown is not None else (artifact_metadata or {}).get("max_drawdown"),
+                "accuracy": active.accuracy if active.accuracy is not None else (artifact_metadata or {}).get("accuracy"),
             }
         }
     finally:
@@ -1580,6 +1840,7 @@ def get_observability():
         if not active_model_name:
             latest_pred = (
                 session.query(Prediction)
+                .filter(Prediction.pair == ACTIVE_SYMBOL)
                 .order_by(desc(Prediction.timestamp), desc(Prediction.id))
                 .first()
             )

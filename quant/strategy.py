@@ -10,6 +10,7 @@ import pandas as pd
 
 from quant.config import QuantEngineConfig
 from quant.types import FeaturePacket, MarketSnapshot, RegimeState, StrategySignal
+from research.strategy_generator.deployment import DeployedStrategySignalProvider
 
 
 def _safe_float(value: object, default: float = 0.0) -> float:
@@ -116,6 +117,7 @@ class StrategyEngine:
     def __init__(self, cfg: QuantEngineConfig) -> None:
         self.cfg = cfg
         self.discovery = AutoStrategyDiscovery(cfg)
+        self.deployed_provider = DeployedStrategySignalProvider()
 
     def discover_for_symbol(self, symbol: str, snapshot: MarketSnapshot) -> None:
         frame_1m = snapshot.frames.get("1min")
@@ -141,12 +143,15 @@ class StrategyEngine:
         s2 = self._mean_reversion(reversion, momentum)
         s3 = self._volatility_breakout(volatility, momentum)
         s4 = self._orderflow_imbalance(orderflow, momentum)
+        research_signal = self._deployed_research_signal(snapshot)
+        research_score = _safe_float(research_signal.score if research_signal else 0.0)
 
         scores = {
             "momentum_breakout": s1,
             "mean_reversion": s2,
             "volatility_breakout": s3,
             "orderflow_imbalance": s4,
+            "deployed_research": research_score,
         }
         weighted_score, components = self._weighted_ensemble(snapshot.symbol, scores, regime.label)
 
@@ -155,11 +160,15 @@ class StrategyEngine:
         if direction == 0:
             confidence = min(confidence, 0.45)
         best_name = max(scores.items(), key=lambda kv: abs(kv[1]))[0]
+        if best_name == "deployed_research" and research_signal is not None:
+            best_name = research_signal.strategy_id
         reason = (
             f"ensemble={weighted_score:.3f} "
             f"regime={regime.label} "
             f"spread={snapshot.spread_pct:.5f}"
         )
+        if research_signal is not None:
+            reason = f"{reason} research={research_signal.strategy_id}:{research_signal.reason}"
         return StrategySignal(
             symbol=snapshot.symbol,
             timestamp=datetime.utcnow(),
@@ -183,6 +192,7 @@ class StrategyEngine:
             "mean_reversion": 0.24,
             "volatility_breakout": 0.22,
             "orderflow_imbalance": 0.24,
+            "deployed_research": 0.18,
         }
         if regime_label == "Trending":
             defaults["momentum_breakout"] += 0.10
@@ -192,6 +202,10 @@ class StrategyEngine:
             defaults["volatility_breakout"] += 0.10
         if regime_label == "Low Volatility":
             defaults["orderflow_imbalance"] += 0.07
+        if scores.get("deployed_research", 0.0):
+            defaults["deployed_research"] += 0.10
+        else:
+            defaults["deployed_research"] = 0.0
 
         # Blend with discovery leaderboard score when available.
         blend = {}
@@ -206,6 +220,22 @@ class StrategyEngine:
         normalized_w = {name: weight / total_w for name, weight in blend.items()}
         weighted_score = sum(_safe_float(scores[k]) * normalized_w[k] for k in normalized_w)
         return float(weighted_score), {k: float(v) for k, v in normalized_w.items()}
+
+    def _deployed_research_signal(self, snapshot: MarketSnapshot):
+        frame = None
+        timeframe = "15min"
+        for candidate_timeframe in ("15min", "5min", "1min"):
+            candidate_frame = snapshot.frames.get(candidate_timeframe)
+            if candidate_frame is not None and not candidate_frame.empty:
+                frame = candidate_frame
+                timeframe = candidate_timeframe
+                break
+        if frame is None:
+            return None
+        try:
+            return self.deployed_provider.best_signal(snapshot.symbol, frame, timeframe=timeframe)
+        except Exception:
+            return None
 
     def _momentum_breakout(self, momentum: float, volatility: float) -> float:
         params = self.discovery.best_params.get("momentum_breakout", {})

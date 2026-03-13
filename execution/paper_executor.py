@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, cast
 
 from loguru import logger
 
-from config.settings import BASE_DIR, ACTIVE_SYMBOL, settings
+from config.settings import BASE_DIR, settings
 from execution.base_executor import BaseExecutor
 from risk.safety_layer import validate_position_size, validate_price
 
@@ -24,6 +24,48 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except Exception:
         return default
+
+
+_NON_LIVE_TICKER_SOURCES = {"synthetic", "last_known", "unavailable", "startup"}
+_SQLITE_JOURNAL_MODES = {"WAL", "DELETE", "TRUNCATE", "PERSIST", "MEMORY", "OFF"}
+
+
+def _is_live_ticker_source(source: Any) -> bool:
+    return str(source or "").strip().lower() not in _NON_LIVE_TICKER_SOURCES
+
+
+def _paper_db_journal_mode() -> str:
+    configured = str(getattr(settings.trading, "paper_db_journal_mode", "DELETE") or "DELETE").strip().upper()
+    if configured not in _SQLITE_JOURNAL_MODES:
+        logger.warning(
+            "Unsupported PAPER_DB_JOURNAL_MODE={} for {}. Falling back to DELETE.",
+            configured,
+            settings.trading.paper_db_path,
+        )
+        return "DELETE"
+    return configured
+
+
+def configure_paper_db_connection(conn: sqlite3.Connection, db_path: Path | str) -> str:
+    requested_mode = _paper_db_journal_mode()
+    try:
+        row = conn.execute(f"PRAGMA journal_mode={requested_mode};").fetchone()
+        effective_mode = str(row[0]).strip().upper() if row and row[0] is not None else requested_mode
+    except sqlite3.Error as exc:
+        if requested_mode != "DELETE":
+            logger.warning(
+                "Paper DB journal mode {} failed for {} ({}). Falling back to DELETE.",
+                requested_mode,
+                db_path,
+                exc,
+            )
+            row = conn.execute("PRAGMA journal_mode=DELETE;").fetchone()
+            effective_mode = str(row[0]).strip().upper() if row and row[0] is not None else "DELETE"
+        else:
+            raise
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA busy_timeout=30000;")
+    return effective_mode
 
 
 def load_paper_snapshot(
@@ -99,12 +141,27 @@ def load_paper_snapshot(
             "trade_count": int(trade_count_row["c"]) if trade_count_row else 0,
             "starting_balance": float(starting_balance),
         }
+    except sqlite3.Error as exc:
+        logger.warning("Paper snapshot unavailable at {}: {}", path, exc)
+        return {
+            "db_path": str(path),
+            "balance": fallback_balance,
+            "realized_pnl": 0.0,
+            "positions": {},
+            "trade_count": 0,
+            "starting_balance": fallback_balance,
+        }
     finally:
         conn.close()
 
 
 def _resolve_paper_db_path(db_path: Optional[str] = None) -> Path:
-    candidate = Path(db_path or settings.trading.paper_db_path)
+    raw_path = str(db_path or settings.trading.paper_db_path)
+    if os.name == "nt":
+        normalized = raw_path.replace("\\", "/").strip()
+        if normalized.startswith("/app/"):
+            raw_path = str((BASE_DIR / normalized.removeprefix("/app/")).resolve())
+    candidate = Path(raw_path)
     try:
         candidate.parent.mkdir(parents=True, exist_ok=True)
         return candidate
@@ -163,9 +220,7 @@ class PaperExecutor(BaseExecutor):
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA busy_timeout=30000;")
+        configure_paper_db_connection(conn, self.db_path)
         return conn
 
     def _init_db(self) -> None:
@@ -415,8 +470,6 @@ class PaperExecutor(BaseExecutor):
         requested_price: Optional[float],
         ticker: Optional[Dict[str, Any]] = None,
     ) -> float:
-        if symbol != ACTIVE_SYMBOL:
-            raise RuntimeError(f"Symbol mismatch: expected {ACTIVE_SYMBOL}, got {symbol}")
         if requested_price is not None and requested_price > 0:
             return float(requested_price)
         else:
@@ -473,9 +526,9 @@ class PaperExecutor(BaseExecutor):
                 market = self.fetcher.get_ticker(symbol)
                 fetched_price = _safe_float(market.get("price"), 0.0)
                 ticker_source = str(market.get("source", "unknown"))
-                if settings.trading.paper_require_live_price and ticker_source == "synthetic":
+                if settings.trading.paper_require_live_price and not _is_live_ticker_source(ticker_source):
                     logger.bind(event="LIVE_PRICE_REQUIRED", pair=symbol, source=ticker_source).warning(
-                        "Using entry price fallback for unrealized update due to synthetic ticker"
+                        "Using entry price fallback for unrealized update due to non-live ticker source"
                     )
                 elif fetched_price > 0:
                     mark_price = fetched_price
@@ -569,8 +622,6 @@ class PaperExecutor(BaseExecutor):
         market_ticker: Optional[Dict[str, Any]] = None,
         ticker: Optional[Dict[str, Any]] = None,  # backward-compatible alias
     ) -> Dict[str, Any]:
-        if symbol != ACTIVE_SYMBOL:
-            raise RuntimeError(f"Symbol mismatch: expected {ACTIVE_SYMBOL}, got {symbol}")
         with self._lock:
             requested_qty = float(qty)
             qty = self._resolve_fill_quantity(symbol, requested_qty)
@@ -579,15 +630,30 @@ class PaperExecutor(BaseExecutor):
             try:
                 resolved_ticker = market_ticker or ticker or self.fetcher.get_ticker(symbol)
             except Exception as exc:
-                logger.bind(event="VALIDATION_ERROR", pair=symbol, error=str(exc)).error(
-                    "Could not fetch ticker"
-                )
-                raise
+                if price is not None and float(price) > 0:
+                    resolved_ticker = {
+                        "price": float(price),
+                        "best_bid": float(price),
+                        "best_ask": float(price),
+                        "size": 1.0,
+                        "source": "force_close_reference",
+                    }
+                    logger.bind(
+                        event="MARKET_SOURCE",
+                        pair=symbol,
+                        source="force_close_reference",
+                        reason="ticker_unavailable",
+                    ).warning("MARKET_SOURCE")
+                else:
+                    logger.bind(event="VALIDATION_ERROR", pair=symbol, error=str(exc)).error(
+                        "Could not fetch ticker"
+                    )
+                    raise
 
             mark_price = _safe_float(resolved_ticker.get("price"), 0.0)
             ticker_source = str(resolved_ticker.get("source", "unknown"))
-            if settings.trading.paper_require_live_price and ticker_source == "synthetic":
-                raise ValueError("Synthetic ticker rejected in PAPER mode")
+            if settings.trading.paper_require_live_price and not _is_live_ticker_source(ticker_source):
+                raise ValueError(f"Non-live ticker source rejected in PAPER mode: {ticker_source}")
             logger.info(f"LIVE PRICE {symbol}: {mark_price:.8f} source={ticker_source}")
             last_price = self._last_prices.get(symbol)
             if not validate_price(symbol, mark_price, last_price):
@@ -718,8 +784,6 @@ class PaperExecutor(BaseExecutor):
             }
 
     def sell(self, symbol: str, qty: float, price: Optional[float] = None) -> Dict[str, Any]:
-        if symbol != ACTIVE_SYMBOL:
-            raise RuntimeError(f"Symbol mismatch: expected {ACTIVE_SYMBOL}, got {symbol}")
         try:
             with self._lock:
                 requested_qty = float(qty)
@@ -729,15 +793,30 @@ class PaperExecutor(BaseExecutor):
                 try:
                     market_ticker = self.fetcher.get_ticker(symbol)
                 except Exception as exc:
-                    logger.bind(event="VALIDATION_ERROR", pair=symbol, error=str(exc)).error(
-                        "VALIDATION_ERROR"
-                    )
-                    raise
+                    if price is not None and float(price) > 0:
+                        market_ticker = {
+                            "price": float(price),
+                            "best_bid": float(price),
+                            "best_ask": float(price),
+                            "size": 1.0,
+                            "source": "force_close_reference",
+                        }
+                        logger.bind(
+                            event="MARKET_SOURCE",
+                            pair=symbol,
+                            source="force_close_reference",
+                            reason="ticker_unavailable",
+                        ).warning("MARKET_SOURCE")
+                    else:
+                        logger.bind(event="VALIDATION_ERROR", pair=symbol, error=str(exc)).error(
+                            "VALIDATION_ERROR"
+                        )
+                        raise
 
                 mark_price = _safe_float(market_ticker.get("price"), 0.0)
                 ticker_source = str(market_ticker.get("source", "unknown"))
-                if settings.trading.paper_require_live_price and ticker_source == "synthetic":
-                    raise ValueError("Synthetic ticker rejected in PAPER mode")
+                if settings.trading.paper_require_live_price and not _is_live_ticker_source(ticker_source):
+                    raise ValueError(f"Non-live ticker source rejected in PAPER mode: {ticker_source}")
                 logger.info(f"LIVE PRICE {symbol}: {mark_price:.8f} source={ticker_source}")
                 last_price = self._last_prices.get(symbol)
                 if not validate_price(symbol, mark_price, last_price):

@@ -57,7 +57,17 @@ class LiveExecutor(BaseExecutor):
         self._assert_symbol(symbol)
         _ = price
         try:
-            ticker = market_ticker or self.fetcher.get_ticker(symbol)
+            if market_ticker is not None:
+                ticker = market_ticker
+            elif price is not None and float(price) > 0:
+                ticker = {
+                    "price": float(price),
+                    "best_bid": float(price),
+                    "best_ask": float(price),
+                    "source": "force_close_reference",
+                }
+            else:
+                ticker = self.fetcher.get_ticker(symbol)
             mark_price = float(ticker.get("price") or 0.0)
         except Exception as exc:
             logger.bind(event="VALIDATION_ERROR", pair=symbol, error=str(exc)).error(
@@ -81,7 +91,15 @@ class LiveExecutor(BaseExecutor):
         self._assert_symbol(symbol)
         _ = price
         try:
-            ticker = self.fetcher.get_ticker(symbol)
+            if price is not None and float(price) > 0:
+                ticker = {
+                    "price": float(price),
+                    "best_bid": float(price),
+                    "best_ask": float(price),
+                    "source": "force_close_reference",
+                }
+            else:
+                ticker = self.fetcher.get_ticker(symbol)
             mark_price = float(ticker.get("price") or 0.0)
         except Exception as exc:
             logger.bind(event="VALIDATION_ERROR", pair=symbol, error=str(exc)).error(

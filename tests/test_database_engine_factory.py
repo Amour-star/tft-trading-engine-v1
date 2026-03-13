@@ -10,6 +10,8 @@ _DB_ENV_KEYS = [
     "DATABASE_MODE",
     "SQLITE_PATH",
     "SQLITE_WAL_MODE",
+    "SQLITE_JOURNAL_MODE",
+    "SQLITE_FALLBACK_JOURNAL_MODE",
     "POSTGRES_HOST",
     "POSTGRES_PORT",
     "POSTGRES_DB",
@@ -66,6 +68,36 @@ def test_sqlite_engine_creation_enables_wal_and_pragmas(
         assert session.autoflush is False
     finally:
         session.close()
+        database_module.dispose_engine()
+
+
+def test_sqlite_engine_uses_delete_journal_mode_when_configured(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    db_file = tmp_path / "engine.sqlite3"
+    _, database_module = _reload_database_modules(
+        monkeypatch,
+        {
+            "DATABASE_MODE": "SQLITE",
+            "SQLITE_PATH": str(db_file),
+            "SQLITE_WAL_MODE": "false",
+            "SQLITE_JOURNAL_MODE": "DELETE",
+            "SQLITE_FALLBACK_JOURNAL_MODE": "DELETE",
+        },
+    )
+
+    engine = database_module.get_engine()
+    try:
+        with engine.connect() as conn:
+            journal_mode = conn.execute(text("PRAGMA journal_mode;")).scalar_one()
+
+        runtime_info = database_module.get_database_runtime_info()
+        assert str(journal_mode).lower() == "delete"
+        assert runtime_info["backend"] == "sqlite"
+        assert runtime_info["sqlite_requested_journal_mode"] == "DELETE"
+        assert runtime_info["sqlite_effective_journal_mode"] == "DELETE"
+        assert runtime_info["sqlite_parent_writable"] is True
+    finally:
         database_module.dispose_engine()
 
 

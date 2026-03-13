@@ -58,6 +58,26 @@ def _bullish_prediction(**overrides):
     return base
 
 
+def _mock_feature_frame(df, _btc_df=None):
+    frame = df.copy()
+    frame["pair"] = "XRP-USDT"
+    frame["atr_14"] = 0.002
+    frame["rsi_14"] = 55.0
+    frame["volatility_20"] = 0.01
+    frame["volatility_regime"] = "normal"
+    frame["market_regime"] = "neutral"
+    frame["volume_ratio"] = 1.25
+    frame["btc_correlation"] = 0.2
+    frame["bb_position"] = 0.5
+    frame["macd_hist"] = 0.01
+    frame["momentum_10"] = 0.01
+    frame["hour_sin"] = 0.0
+    frame["hour_cos"] = 1.0
+    frame["dow_sin"] = 0.0
+    frame["dow_cos"] = 1.0
+    return frame
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -80,9 +100,9 @@ def mock_dependencies():
         ]
         fetcher.get_spread.return_value = (0.001, 0.001)
         fetcher.get_ticker.return_value = {
-            "price": 0.6,
-            "best_ask": 0.601,
-            "best_bid": 0.599,
+            "price": 3000.0,
+            "best_ask": 3001.0,
+            "best_bid": 2999.0,
         }
 
         # Build a realistic DataFrame for fetch_klines
@@ -167,9 +187,20 @@ class TestSpotOnlyDecision:
         # Raise meta probability above threshold so pairs aren't disqualified
         mocks["meta_result"].probability = 0.72
 
-        with patch("engine.decision.compute_features", side_effect=lambda df, btc: df):
+        with patch("engine.decision.compute_features", side_effect=_mock_feature_frame):
             engine = DecisionEngine(mocks["fetcher"], mocks["predictor"])
             engine.allow_shorts = False
+            engine._compute_multifactor_components = MagicMock(
+                return_value={
+                    "signal_score": 0.68,
+                    "momentum_factor": 0.65,
+                    "volatility_factor": 0.55,
+                    "trend_factor": 0.65,
+                    "mean_reversion_factor": 0.50,
+                    "volume_factor": 0.60,
+                    "volume_imbalance": 0.10,
+                }
+            )
             signal = engine.generate_signal()
 
         assert signal is None, "Expected None when all candidates are bearish"
@@ -194,9 +225,20 @@ class TestSpotOnlyDecision:
         mocks["predictor"].predict.return_value = _bullish_prediction()
         mocks["meta_result"].probability = 0.78
 
-        with patch("engine.decision.compute_features", side_effect=lambda df, btc: df):
+        with patch("engine.decision.compute_features", side_effect=_mock_feature_frame):
             engine = DecisionEngine(mocks["fetcher"], mocks["predictor"])
             engine.allow_shorts = False
+            engine._compute_multifactor_components = MagicMock(
+                return_value={
+                    "signal_score": 0.68,
+                    "momentum_factor": 0.65,
+                    "volatility_factor": 0.55,
+                    "trend_factor": 0.65,
+                    "mean_reversion_factor": 0.50,
+                    "volume_factor": 0.60,
+                    "volume_imbalance": 0.10,
+                }
+            )
             signal = engine.generate_signal()
 
         assert signal is not None, "Expected a signal when bullish candidate exists"
@@ -219,9 +261,20 @@ class TestSpotOnlyDecision:
         mocks["predictor"].predict.side_effect = _predict_side_effect
         mocks["meta_result"].probability = 0.75
 
-        with patch("engine.decision.compute_features", side_effect=lambda df, btc: df):
+        with patch("engine.decision.compute_features", side_effect=_mock_feature_frame):
             engine = DecisionEngine(mocks["fetcher"], mocks["predictor"])
             engine.allow_shorts = False
+            engine._compute_multifactor_components = MagicMock(
+                return_value={
+                    "signal_score": 0.68,
+                    "momentum_factor": 0.65,
+                    "volatility_factor": 0.55,
+                    "trend_factor": 0.65,
+                    "mean_reversion_factor": 0.50,
+                    "volume_factor": 0.60,
+                    "volume_imbalance": 0.10,
+                }
+            )
             signal = engine.generate_signal()
 
         assert signal is not None, "Expected a BUY signal from a non-bearish candidate"
@@ -233,7 +286,7 @@ class TestSpotOnlyDecision:
 
         mocks = mock_dependencies
         
-        with patch("engine.decision.compute_features", side_effect=lambda df, btc: df):
+        with patch("engine.decision.compute_features", side_effect=_mock_feature_frame):
             engine = DecisionEngine(mocks["fetcher"], mocks["predictor"])
             with patch.object(engine, "_get_candidate_pairs", return_value=[]):
                 signal = engine.generate_signal()
@@ -262,7 +315,7 @@ class TestSpotOnlyDecision:
             "valid": False,
         }
 
-        with patch("engine.decision.compute_features", side_effect=lambda df, btc: df):
+        with patch("engine.decision.compute_features", side_effect=_mock_feature_frame):
             engine = DecisionEngine(mocks["fetcher"], mocks["predictor"])
             signal = engine.generate_signal()
 

@@ -47,6 +47,7 @@ _GET_SESSION_TARGETS = [
     "dashboard.api",
     "risk.prop_risk_manager",
     "paper.reset",
+    "risk.safety_layer",
     "services.reconciliation",
 ]
 

@@ -31,6 +31,8 @@ data/historical/
 *.log
 lightning_logs/
 tmp_*/
+.tmp_pytest/
+tmp_pytest_run/
 
 # Editor/system artifacts
 .vscode/

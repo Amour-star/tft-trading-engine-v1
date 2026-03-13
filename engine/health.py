@@ -26,14 +26,52 @@ class HealthServer:
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
-                if self.path != "/health":
+                path = str(self.path or "").split("?", 1)[0]
+
+                if path not in {"/health", "/market/status", "/market/source", "/market/latency"}:
                     self.send_response(404)
                     self.end_headers()
                     return
 
-                payload = status_provider()
-                ready = bool(payload.get("ready", True))
-                status_code = 200 if ready else 503
+                status = status_provider()
+                market_payload = {
+                    "exchange": status.get("exchange", "kucoin"),
+                    "source": status.get("source", status.get("ticker_source", "market_data_service")),
+                    "latency_ms": status.get("latency_ms"),
+                    "last_update": status.get("last_update", status.get("data_age_seconds")),
+                    "market_data_ready": bool(status.get("market_data_ready", False)),
+                    "market_data_source": status.get("market_data_source", "market_data_service"),
+                    "ticker_source": status.get("ticker_source", "unknown"),
+                    "orderbook_source": status.get("orderbook_source", "unknown"),
+                    "warning": status.get("market_data_warning", ""),
+                }
+
+                if path == "/health":
+                    payload = status
+                    ready = bool(payload.get("ready", True))
+                    status_code = 200 if ready else 503
+                elif path == "/market/status":
+                    payload = market_payload
+                    status_code = 200 if market_payload["market_data_ready"] else 503
+                elif path == "/market/source":
+                    payload = {
+                        "exchange": market_payload["exchange"],
+                        "source": market_payload["source"],
+                        "market_data_source": market_payload["market_data_source"],
+                        "ticker_source": market_payload["ticker_source"],
+                        "orderbook_source": market_payload["orderbook_source"],
+                        "last_update": market_payload["last_update"],
+                    }
+                    status_code = 200
+                else:
+                    payload = {
+                        "exchange": market_payload["exchange"],
+                        "source": market_payload["source"],
+                        "latency_ms": market_payload["latency_ms"],
+                        "last_update": market_payload["last_update"],
+                    }
+                    status_code = 200
+
                 body = json.dumps(payload).encode("utf-8")
 
                 self.send_response(status_code)

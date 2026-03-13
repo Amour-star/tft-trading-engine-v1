@@ -11,6 +11,7 @@ gymnasium==0.29.1
 # Common training/runtime deps
 numpy==1.26.4
 pandas==2.2.3
+pyarrow==18.1.0
 ta==0.11.0
 redis==5.2.1
 sqlalchemy==2.0.36

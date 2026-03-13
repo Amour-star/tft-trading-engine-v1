@@ -17,11 +17,29 @@ if str(ROOT) not in sys.path:
 
 from data.fetcher import KuCoinDataFetcher
 from data.features import compute_features
-from config.settings import XRP_ONLY_SYMBOL
+from data.database import init_db, replace_historical_candles
+import os
+
+from config.settings import REFERENCE_SYMBOL, XRP_ONLY_SYMBOL
 from utils.logging import setup_logging
 
 DATA_DIR = ROOT / "data" / "historical"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _env_symbols() -> list[str]:
+    raw = os.getenv("MARKET_DATA_SYMBOLS", "").strip()
+    if not raw:
+        return []
+    parsed: list[str] = []
+    for token in raw.split(","):
+        symbol = token.strip().upper().replace("/", "-")
+        if not symbol:
+            continue
+        if "-" not in symbol:
+            symbol = f"{symbol}-USDT"
+        parsed.append(symbol)
+    return list(dict.fromkeys(parsed))
 
 
 def main() -> None:
@@ -31,36 +49,60 @@ def main() -> None:
     parser.add_argument("--months", type=int, default=6, help="Months of history")
     parser.add_argument("--min-rows", type=int, default=220, help="Minimum rows required per file")
     parser.add_argument(
+        "--symbols",
+        nargs="+",
+        default=None,
+        help="Explicit symbol universe to fetch (example: BTC-USDT ETH-USDT XRP-USDT DOGE-USDT)",
+    )
+    parser.add_argument(
         "--timeframes",
         nargs="+",
         default=["15min", "1hour"],
         help="Timeframes to fetch",
     )
+    parser.add_argument(
+        "--skip-db-store",
+        action="store_true",
+        help="Skip storing raw OHLCV history in the database",
+    )
     args = parser.parse_args()
 
     fetcher = KuCoinDataFetcher()
+    if not args.skip_db_store:
+        init_db()
 
-    logger.info(f"Fetching top {args.pairs} USDT pairs...")
-    top_pairs = fetcher.get_top_usdt_pairs(args.pairs)
-    pair_symbols = [str(p.get("symbol", "")).strip() for p in top_pairs if str(p.get("symbol", "")).strip()]
+    pair_symbols = [str(symbol).strip().upper() for symbol in (args.symbols or []) if str(symbol).strip()]
     if not pair_symbols:
-        pair_symbols = [XRP_ONLY_SYMBOL]
-        logger.warning("Top pair discovery returned no symbols. Using fallback pairs.")
+        pair_symbols = _env_symbols()
+    if not pair_symbols:
+        logger.info(f"Fetching top {args.pairs} USDT pairs...")
+        top_pairs = fetcher.get_top_usdt_pairs(args.pairs)
+        pair_symbols = [
+            str(p.get("symbol", "")).strip()
+            for p in top_pairs
+            if str(p.get("symbol", "")).strip()
+        ]
+    if not pair_symbols:
+        pair_symbols = [REFERENCE_SYMBOL, XRP_ONLY_SYMBOL]
+        logger.warning("Symbol discovery returned no symbols. Using fallback pairs.")
 
-    # Always include XRP in the fetch universe so the trained model vocabulary can support XRP-only mode.
-    pair_symbols = list(dict.fromkeys([XRP_ONLY_SYMBOL, *pair_symbols]))
+    # Always include the benchmark reference pair and the active symbol.
+    pair_symbols = list(dict.fromkeys([REFERENCE_SYMBOL, XRP_ONLY_SYMBOL, *pair_symbols]))
     logger.info(f"Pairs: {pair_symbols}")
 
-    logger.info(f"Fetching {XRP_ONLY_SYMBOL} reference data...")
-    btc_dfs: dict[str, pd.DataFrame] = {}
+    logger.info(f"Fetching {REFERENCE_SYMBOL} reference data...")
+    reference_dfs: dict[str, pd.DataFrame] = {}
     for tf in args.timeframes:
-        btc_df = fetcher.fetch_history(XRP_ONLY_SYMBOL, tf, args.months)
-        if btc_df.empty:
-            logger.warning(f"{XRP_ONLY_SYMBOL} {tf} returned no data; using safe feature defaults.")
+        ref_df = fetcher.fetch_history(REFERENCE_SYMBOL, tf, args.months)
+        if ref_df.empty:
+            logger.warning(f"{REFERENCE_SYMBOL} {tf} returned no data; using safe feature defaults.")
         else:
-            btc_df.to_parquet(DATA_DIR / f"{XRP_ONLY_SYMBOL}_{tf}.parquet", index=False)
-            logger.info(f"{XRP_ONLY_SYMBOL} {tf}: {len(btc_df)} candles")
-        btc_dfs[tf] = btc_df
+            if not args.skip_db_store:
+                stored_rows = replace_historical_candles(REFERENCE_SYMBOL, tf, ref_df)
+                logger.info(f"{REFERENCE_SYMBOL} {tf}: stored {stored_rows} candles in database")
+            ref_df.to_parquet(DATA_DIR / f"{REFERENCE_SYMBOL}_{tf}.parquet", index=False)
+            logger.info(f"{REFERENCE_SYMBOL} {tf}: {len(ref_df)} candles")
+        reference_dfs[tf] = ref_df
 
     written_files = 0
     for symbol in pair_symbols:
@@ -83,10 +125,14 @@ def main() -> None:
                 )
                 continue
 
-            btc_df = btc_dfs.get(tf, pd.DataFrame())
+            if not args.skip_db_store:
+                stored_rows = replace_historical_candles(symbol, tf, df)
+                logger.info(f"{symbol} {tf}: stored {stored_rows} candles in database")
+
+            ref_df = reference_dfs.get(tf, pd.DataFrame())
             df["pair"] = symbol
             try:
-                df = compute_features(df, btc_df)
+                df = compute_features(df, df if symbol == REFERENCE_SYMBOL else ref_df)
             except Exception as exc:
                 if symbol == XRP_ONLY_SYMBOL:
                     raise RuntimeError(

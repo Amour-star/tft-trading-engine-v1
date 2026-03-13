@@ -653,17 +653,37 @@ def render_asset_dashboard(symbol: str, status: dict | None, auto_refresh_enable
     source_label = str(status_payload.get("market_data_source") or "unknown")
     ticker_source = str(status_payload.get("ticker_source") or "unknown")
     orderbook_source = str(status_payload.get("orderbook_source") or "unknown")
+    market_data_ready = bool(status_payload.get("market_data_ready", False))
+    market_data_warning = str(status_payload.get("market_data_warning") or "")
+    auth_required = bool(status_payload.get("auth_required", False))
+    credentials_valid = bool(status_payload.get("credentials_valid", False))
+    data_age_seconds = status_payload.get("data_age_seconds")
+    if auth_required and not credentials_valid:
+        st.error("KuCoin credentials are invalid for required authenticated mode. Trading is paused.")
     if bool(status_payload.get("synthetic_active")):
         st.error(
             f"Synthetic market data active for {symbol}. "
             "Disable trading or restore exchange connectivity before trusting PnL/metrics."
         )
+    elif not market_data_ready:
+        st.warning(
+            market_data_warning
+            or f"{symbol} market data is not ready. Trading is paused until live data recovers."
+        )
     elif source_label == "public_ticker":
         st.warning(f"{symbol} is using public ticker fallback (no real L2 orderbook).")
-    st.caption(f"Data source: {source_label} | ticker={ticker_source} | orderbook={orderbook_source}")
+    age_label = "n/a"
+    if data_age_seconds is not None:
+        age_label = f"{safe_float(data_age_seconds):.1f}s"
+    st.caption(
+        f"Data source: {source_label} | ticker={ticker_source} | orderbook={orderbook_source} | age={age_label}"
+    )
     r1.metric("Aggression", f"{safe_float(status_payload.get('aggression_level', threshold_info.get('aggression_level', 1.0)), 1.0):.2f}")
     r2.metric("Shorts", "ON" if bool(status_payload.get("allow_shorts", threshold_info.get("allow_shorts", False))) else "OFF")
-    r3.metric("Scaled Threshold", f"{safe_float(status_payload.get('threshold_after_scaling')):.3f}")
+    threshold_value = status_payload.get("threshold_after_scaling")
+    if threshold_value is None:
+        threshold_value = status_payload.get("threshold", 0.0)
+    r3.metric("Scaled Threshold", f"{safe_float(threshold_value):.3f}")
     latest_regime = status_payload.get("latest_regime") or {}
     r4.metric(
         "Regime",

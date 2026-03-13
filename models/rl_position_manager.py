@@ -71,9 +71,13 @@ class PPOPositionManager:
     }
 
     def __init__(self, model_path: str | None = None) -> None:
-        default_path = Path(os.getenv("RL_MODEL_PATH", "models/rl/latest_ppo.zip"))
+        default_path = Path(os.getenv("RL_MODEL_PATH", "saved_models/rl/latest_ppo.zip"))
         self.model_path = Path(model_path) if model_path else default_path
-        self.model_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.model_path.parent.exists():
+            try:
+                self.model_path.parent.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
         self.model = None
         self.model_version = "ppo_fallback"
 

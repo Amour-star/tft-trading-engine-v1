@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
+import json
 import warnings
 from contextlib import contextmanager
 from datetime import datetime
@@ -214,13 +215,17 @@ def _filter_min_history(
 
 
 def _resolve_num_workers() -> int:
-    """Windows-safe default for DataLoader workers."""
+    """Resolve DataLoader worker count safely across desktop and container runtimes."""
     env_override = os.getenv("DATALOADER_NUM_WORKERS", "").strip()
     if env_override:
         try:
             return max(0, int(env_override))
         except ValueError:
             pass
+
+    # Docker Desktop defaults can make multi-worker DataLoaders fragile unless shm is tuned.
+    if Path("/.dockerenv").exists():
+        return 0
 
     if os.name == "nt":
         return 0
@@ -499,11 +504,31 @@ def train_tft(
     }
 
     info_path = save_path / "info.txt"
+    trained_at = datetime.utcnow().isoformat()
     with open(info_path, "w", encoding="utf-8") as handle:
         handle.write(f"version: {version}\n")
-        handle.write(f"trained_at: {datetime.utcnow().isoformat()}\n")
+        handle.write(f"trained_at: {trained_at}\n")
         handle.write(f"metrics: {metrics}\n")
         handle.write(f"accelerator: {accelerator}\n")
+
+    metadata_path = save_path / "metadata.json"
+    metadata = {
+        "model_version": version,
+        "trained_at": trained_at,
+        "training_loss": metrics.get("training_loss"),
+        "validation_loss": metrics.get("validation_loss"),
+        "sharpe_ratio": metrics.get("sharpe_ratio"),
+        "max_drawdown": metrics.get("max_drawdown"),
+        "accuracy": metrics.get("accuracy"),
+        "best_epoch": metrics.get("best_epoch"),
+        "pairs": sorted({str(pair).strip() for pair in processed_df["pair"].dropna().unique()}),
+        "training_window": {
+            "start": processed_df["timestamp"].min().isoformat() if not processed_df.empty else None,
+            "end": processed_df["timestamp"].max().isoformat() if not processed_df.empty else None,
+            "rows": int(len(processed_df)),
+        },
+    }
+    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
 
     logger.info(f"Model {version} trained. Val loss: {metrics['validation_loss']:.6f}")
     return version, metrics

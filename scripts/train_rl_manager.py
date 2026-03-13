@@ -54,7 +54,7 @@ def main():
     parser.add_argument("--pair", default="XRP-USDT", help="Pair to use")
     parser.add_argument("--timeframe", default="15min", help="Timeframe")
     parser.add_argument("--timesteps", type=int, default=100000, help="Training timesteps")
-    parser.add_argument("--output", default="models/rl/latest_ppo.zip", help="Output model path")
+    parser.add_argument("--output", default="saved_models/rl/latest_ppo.zip", help="Output model path")
     args = parser.parse_args()
 
     data_path = Path("data/historical") / f"{args.pair}_{args.timeframe}.parquet"

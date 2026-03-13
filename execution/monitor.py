@@ -38,115 +38,33 @@ class PositionMonitor:
         self.rl_manager = rl_manager
         self._trailing_extreme: Dict[str, float] = {}
 
-    def monitor_cycle(self) -> Optional[str]:
+    def monitor_cycle(self) -> Optional[str | list[str]]:
         """
-        Run one monitoring cycle for open position.
-        Returns trade_id if position was closed, None otherwise.
+        Run one monitoring cycle for all open positions.
+        Returns a single trade_id, a list of trade_ids, or None.
         """
         session = get_session()
         try:
-            trade = session.query(Trade).filter(Trade.status == "open").first()
-            if not trade:
+            open_trades = (
+                session.query(Trade)
+                .filter(Trade.status == "open")
+                .order_by(Trade.entry_time.asc(), Trade.id.asc())
+                .all()
+            )
+            if not open_trades:
                 return None
-
-            pair = trade.pair
-            side = str(trade.side or "BUY").upper()
-            side_mult = 1.0 if side == "BUY" else -1.0
-            entry_price = float(trade.entry_price)
-            stop_price = float(trade.stop_price)
-            target_price = float(trade.target_price)
-
-            try:
-                ticker = self.fetcher.get_ticker(pair)
-                current_price = float(ticker["price"])
-            except Exception as e:
-                logger.error(f"Cannot get price for {pair}: {e}")
-                return None
-
-            extreme = self._trailing_extreme.get(trade.trade_id, entry_price)
-            if side == "BUY":
-                extreme = max(extreme, current_price)
-            else:
-                extreme = min(extreme, current_price)
-            self._trailing_extreme[trade.trade_id] = extreme
-
-            latest_features, prediction, atr = self._build_model_context(pair)
-
-            # Check 1: stop/target hard exits.
-            if (side == "BUY" and current_price <= stop_price) or (side == "SELL" and current_price >= stop_price):
-                return self._close_trade(trade, current_price, "stop", session)
-            if (side == "BUY" and current_price >= target_price) or (side == "SELL" and current_price <= target_price):
-                return self._close_trade(trade, current_price, "target", session)
-
-            # Check 2: trailing stop when profitable.
-            pnl_pct = side_mult * (current_price - entry_price) / max(entry_price, 1e-12)
-            if pnl_pct > 0:
-                if pnl_pct > 0.02:
-                    if side == "BUY":
-                        trail_stop = extreme - (atr * 1.5)
-                        should_update = trail_stop > stop_price
-                    else:
-                        trail_stop = extreme + (atr * 1.5)
-                        should_update = trail_stop < stop_price
-                    if should_update:
-                        logger.info(f"Trailing stop: {stop_price:.6f} -> {trail_stop:.6f}")
-                        trade.stop_price = trail_stop
-                        stop_price = trail_stop
-                        self._update_stop_order(trade, trail_stop)
-
-            # Check 3: PPO action for position management.
-            if self.rl_manager is not None:
-                rl_closed_id = self._apply_rl_management(
-                    trade=trade,
-                    current_price=current_price,
-                    stop_price=stop_price,
-                    atr=atr,
-                    latest_features=latest_features,
-                    session=session,
-                )
-                if rl_closed_id:
-                    return rl_closed_id
-
-            # Check 4: model confidence reversal guard.
-            new_confidence = float(prediction.get("confidence", 0.0))
-            prob_down = float(prediction.get("prob_down", 0.0))
-            prob_up = float(prediction.get("prob_up", 0.0))
-            if new_confidence < 0.4:
-                if side == "BUY":
-                    tighter_stop = current_price - (current_price - stop_price) * 0.5
-                    should_update = tighter_stop > stop_price
-                else:
-                    tighter_stop = current_price + (stop_price - current_price) * 0.5
-                    should_update = tighter_stop < stop_price
-                if should_update:
-                    logger.info(f"Tightening stop on low confidence: {new_confidence:.3f}")
-                    trade.stop_price = tighter_stop
-                    self._update_stop_order(trade, tighter_stop)
-            if side == "BUY" and prob_down > 0.75 and new_confidence > 0.6:
-                logger.info(f"Strong bearish signal: prob_down={prob_down:.3f}")
-                return self._close_trade(trade, current_price, "signal_reversal", session)
-            if side == "SELL" and prob_up > 0.75 and new_confidence > 0.6:
-                logger.info(f"Strong bullish signal against short: prob_up={prob_up:.3f}")
-                return self._close_trade(trade, current_price, "signal_reversal", session)
-
-            # Check 5: short-term momentum weakening.
-            try:
-                df5 = self.fetcher.fetch_klines(pair, "5min")
-                if not df5.empty and len(df5) > 20:
-                    recent_returns = df5["close"].pct_change().tail(5)
-                    if side == "BUY":
-                        weakening = all(r < 0 for r in recent_returns.dropna())
-                    else:
-                        weakening = all(r > 0 for r in recent_returns.dropna())
-                    if weakening:
-                        logger.info("Momentum weakening detected")
-                        if pnl_pct > 0.005:
-                            return self._close_trade(trade, current_price, "momentum_weakening", session)
-            except Exception:
-                pass
+            closed_ids: list[str] = []
+            for trade in open_trades:
+                closed_id = self._monitor_trade(trade, session)
+                if closed_id:
+                    closed_ids.append(closed_id)
 
             session.commit()
-            return None
+            if not closed_ids:
+                return None
+            if len(closed_ids) == 1:
+                return closed_ids[0]
+            return closed_ids
 
         except Exception as e:
             logger.error(f"Monitor cycle error: {e}")
@@ -154,6 +72,119 @@ class PositionMonitor:
             return None
         finally:
             session.close()
+
+    def _monitor_trade(self, trade: Trade, session) -> Optional[str]:
+        pair = trade.pair
+        side = str(trade.side or "BUY").upper()
+        side_mult = 1.0 if side == "BUY" else -1.0
+        entry_price = float(trade.entry_price or 0.0)
+        stop_price = float(trade.stop_price or 0.0)
+        target_price = float(trade.target_price or 0.0)
+        if entry_price <= 0.0:
+            return None
+
+        try:
+            ticker = self.fetcher.get_ticker(pair)
+            current_price = float(ticker["price"])
+        except Exception as exc:
+            logger.error(f"Cannot get price for {pair}: {exc}")
+            return None
+
+        extreme = self._trailing_extreme.get(trade.trade_id, entry_price)
+        if side == "BUY":
+            extreme = max(extreme, current_price)
+        else:
+            extreme = min(extreme, current_price)
+        self._trailing_extreme[trade.trade_id] = extreme
+
+        latest_features, prediction, atr = self._build_model_context(pair)
+        self._update_trade_diagnostics(trade, current_price)
+
+        if (side == "BUY" and current_price <= stop_price) or (side == "SELL" and current_price >= stop_price):
+            return self._close_trade(trade, current_price, "stop", session)
+        if (side == "BUY" and current_price >= target_price) or (side == "SELL" and current_price <= target_price):
+            return self._close_trade(trade, current_price, "target", session)
+
+        initial_stop_distance = abs(entry_price - stop_price)
+        pnl_pct = side_mult * (current_price - entry_price) / max(entry_price, 1e-12)
+        pnl_r = (
+            side_mult * (current_price - entry_price) / initial_stop_distance
+            if initial_stop_distance > 0
+            else 0.0
+        )
+
+        if pnl_r >= 1.0:
+            buffer = self._fee_buffer_per_unit(trade)
+            breakeven_stop = entry_price + buffer if side == "BUY" else entry_price - buffer
+            should_update = breakeven_stop > stop_price if side == "BUY" else breakeven_stop < stop_price
+            if should_update:
+                logger.info(f"Breakeven stop: {stop_price:.6f} -> {breakeven_stop:.6f}")
+                trade.stop_price = breakeven_stop
+                stop_price = breakeven_stop
+                self._update_stop_order(trade, breakeven_stop)
+
+        if pnl_r >= 1.5 and atr > 0:
+            trail_buffer = max(atr * 1.25, self._fee_buffer_per_unit(trade))
+            if side == "BUY":
+                trail_stop = extreme - trail_buffer
+                should_update = trail_stop > stop_price
+            else:
+                trail_stop = extreme + trail_buffer
+                should_update = trail_stop < stop_price
+            if should_update:
+                logger.info(f"Trailing stop: {stop_price:.6f} -> {trail_stop:.6f}")
+                trade.stop_price = trail_stop
+                stop_price = trail_stop
+                self._update_stop_order(trade, trail_stop)
+
+        if self.rl_manager is not None:
+            rl_closed_id = self._apply_rl_management(
+                trade=trade,
+                current_price=current_price,
+                stop_price=stop_price,
+                atr=atr,
+                latest_features=latest_features,
+                session=session,
+            )
+            if rl_closed_id:
+                return rl_closed_id
+
+        new_confidence = float(prediction.get("confidence", 0.0))
+        prob_down = float(prediction.get("prob_down", 0.0))
+        prob_up = float(prediction.get("prob_up", 0.0))
+        if new_confidence < 0.4 and pnl_r > 0:
+            if side == "BUY":
+                tighter_stop = max(stop_price, current_price - max(atr, initial_stop_distance * 0.5))
+                should_update = tighter_stop > stop_price
+            else:
+                tighter_stop = min(stop_price, current_price + max(atr, initial_stop_distance * 0.5))
+                should_update = tighter_stop < stop_price
+            if should_update:
+                logger.info(f"Tightening stop on low confidence: {new_confidence:.3f}")
+                trade.stop_price = tighter_stop
+                self._update_stop_order(trade, tighter_stop)
+        if side == "BUY" and prob_down > 0.75 and new_confidence > 0.6:
+            logger.info(f"Strong bearish signal: prob_down={prob_down:.3f}")
+            return self._close_trade(trade, current_price, "signal_reversal", session)
+        if side == "SELL" and prob_up > 0.75 and new_confidence > 0.6:
+            logger.info(f"Strong bullish signal against short: prob_up={prob_up:.3f}")
+            return self._close_trade(trade, current_price, "signal_reversal", session)
+
+        try:
+            df5 = self.fetcher.fetch_klines(pair, "5min")
+            if not df5.empty and len(df5) > 20:
+                recent_returns = df5["close"].pct_change().tail(5)
+                if side == "BUY":
+                    weakening = all(r < 0 for r in recent_returns.dropna())
+                else:
+                    weakening = all(r > 0 for r in recent_returns.dropna())
+                if weakening and pnl_pct > 0.005:
+                    logger.info("Momentum weakening detected")
+                    return self._close_trade(trade, current_price, "momentum_weakening", session)
+        except Exception:
+            pass
+
+        return None
 
     def _build_model_context(self, pair: str) -> tuple[Dict[str, Any], Dict[str, Any], float]:
         latest_features: Dict[str, Any] = {}
@@ -274,6 +305,31 @@ class PositionMonitor:
         payload["partial_realized_pnl"] = float(payload.get("partial_realized_pnl", 0.0)) + float(realized)
         trade.prediction = payload
 
+    def _fee_buffer_per_unit(self, trade: Trade) -> float:
+        quantity = max(float(trade.quantity or 0.0), 1e-12)
+        commission = float(trade.commission or 0.0)
+        return commission / quantity
+
+    def _update_trade_diagnostics(self, trade: Trade, current_price: float) -> None:
+        side = str(trade.side or "BUY").upper()
+        side_mult = 1.0 if side == "BUY" else -1.0
+        quantity = float(trade.quantity or 0.0)
+        entry_price = float(trade.entry_price or 0.0)
+        payload = dict(trade.prediction or {})
+
+        move_per_unit = side_mult * (current_price - entry_price)
+        running_pnl = move_per_unit * quantity
+        mfe_per_unit = max(float(payload.get("mfe_per_unit", 0.0) or 0.0), move_per_unit)
+        mae_per_unit = min(float(payload.get("mae_per_unit", 0.0) or 0.0), move_per_unit)
+
+        payload["last_mark_price"] = float(current_price)
+        payload["mfe_per_unit"] = float(mfe_per_unit)
+        payload["mae_per_unit"] = float(mae_per_unit)
+        payload["mfe_pnl"] = float(mfe_per_unit * quantity)
+        payload["mae_pnl"] = float(mae_per_unit * quantity)
+        payload["unrealized_pnl_estimate"] = float(running_pnl)
+        trade.prediction = payload
+
     def _min_qty(self, symbol: str) -> float:
         try:
             info = self.executor.get_symbol_info(symbol)
@@ -334,6 +390,17 @@ class PositionMonitor:
             )
         if exit_fee > 0:
             trade.commission = float(trade.commission or 0.0) + exit_fee
+
+        payload = dict(trade.prediction or {})
+        payload["exit_context"] = {
+            "reason": reason,
+            "exit_price": float(exit_price),
+            "exit_time": trade.exit_time.isoformat() if trade.exit_time else None,
+            "mfe_pnl": float(payload.get("mfe_pnl", 0.0) or 0.0),
+            "mae_pnl": float(payload.get("mae_pnl", 0.0) or 0.0),
+            "partial_realized_pnl": float(partial_realized),
+        }
+        trade.prediction = payload
 
         try:
             session.commit()
@@ -417,8 +484,12 @@ class PositionMonitor:
             open_trades = session.query(Trade).filter(Trade.status == "open").all()
             for trade in open_trades:
                 try:
-                    ticker = self.fetcher.get_ticker(trade.pair)
-                    self._close_trade(trade, float(ticker["price"]), "manual_force_close", session)
+                    try:
+                        ticker = self.fetcher.get_ticker(trade.pair)
+                        exit_price = float(ticker["price"])
+                    except Exception:
+                        exit_price = float(trade.entry_price or 0.0)
+                    self._close_trade(trade, exit_price, "manual_force_close", session)
                 except Exception as e:
                     logger.error(f"Error force-closing {trade.trade_id}: {e}")
         finally:
@@ -437,7 +508,11 @@ class PositionMonitor:
             if not trade:
                 return None
 
-            ticker = self.fetcher.get_ticker(trade.pair)
-            return self._close_trade(trade, float(ticker["price"]), "manual_force_close", session)
+            try:
+                ticker = self.fetcher.get_ticker(trade.pair)
+                exit_price = float(ticker["price"])
+            except Exception:
+                exit_price = float(trade.entry_price or 0.0)
+            return self._close_trade(trade, exit_price, "manual_force_close", session)
         finally:
             session.close()

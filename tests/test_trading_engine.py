@@ -20,6 +20,49 @@ from data.database import Base, Trade, EngineState, DailyStats
 from tests.conftest import make_ohlcv, make_mock_fetcher, make_mock_predictor
 
 
+def _configure_decision_context(engine, *, bullish: bool = True):
+    engine.regime_engine.classify = MagicMock(
+        return_value={
+            "trend": "bull" if bullish else "bear",
+            "volatility": "normal",
+            "momentum": "moderate",
+            "regime_score": 0.55,
+        }
+    )
+    engine._compute_multifactor_components = MagicMock(
+        return_value={
+            "signal_score": 0.68 if bullish else 0.32,
+            "momentum_factor": 0.65 if bullish else 0.35,
+            "volatility_factor": 0.55,
+            "trend_factor": 0.65 if bullish else 0.35,
+            "mean_reversion_factor": 0.50,
+            "volume_factor": 0.60,
+            "volume_imbalance": 0.10 if bullish else -0.10,
+        }
+    )
+    return engine
+
+
+def _mock_feature_frame(df, _btc_df=None, *, bullish: bool = True):
+    frame = df.copy()
+    frame["pair"] = "XRP-USDT"
+    frame["atr_14"] = 0.5
+    frame["rsi_14"] = 55.0 if bullish else 45.0
+    frame["volatility_20"] = 0.01
+    frame["volatility_regime"] = "normal"
+    frame["market_regime"] = "bull" if bullish else "bear"
+    frame["volume_ratio"] = 1.25
+    frame["btc_correlation"] = 0.2
+    frame["bb_position"] = 0.5
+    frame["macd_hist"] = 0.01 if bullish else -0.01
+    frame["momentum_10"] = 0.01 if bullish else -0.01
+    frame["hour_sin"] = 0.0
+    frame["hour_cos"] = 1.0
+    frame["dow_sin"] = 0.0
+    frame["dow_cos"] = 1.0
+    return frame
+
+
 # =========================================================================
 # PHASE 1: Feature Engineering Tests
 # =========================================================================
@@ -231,8 +274,10 @@ class TestDecisionEngine:
         fetcher = make_mock_fetcher(current_price=100.0)
         predictor = make_mock_predictor(prob_up=0.7, prob_down=0.3, confidence=0.75)
         engine = DecisionEngine(fetcher, predictor)
+        _configure_decision_context(engine, bullish=True)
         engine.confidence_threshold = 0.5
-        signal = engine.generate_signal()
+        with patch("engine.decision.compute_features", side_effect=lambda df, btc: _mock_feature_frame(df, btc, bullish=True)):
+            signal = engine.generate_signal()
         assert signal is not None
         assert signal.side == "BUY"
         assert signal.entry_price > 0
@@ -246,7 +291,10 @@ class TestDecisionEngine:
         fetcher = make_mock_fetcher(current_price=100.0)
         predictor = make_mock_predictor(prob_up=0.3, prob_down=0.7, confidence=0.75)
         engine = DecisionEngine(fetcher, predictor)
-        signal = engine.generate_signal()
+        _configure_decision_context(engine, bullish=False)
+        engine.allow_shorts = True
+        with patch("engine.decision.compute_features", side_effect=lambda df, btc: _mock_feature_frame(df, btc, bullish=False)):
+            signal = engine.generate_signal()
         assert signal is not None
         assert signal.side == "SELL"
 
@@ -256,8 +304,10 @@ class TestDecisionEngine:
         fetcher = make_mock_fetcher(current_price=100.0)
         predictor = make_mock_predictor(prob_up=0.7, prob_down=0.3, confidence=0.3)
         engine = DecisionEngine(fetcher, predictor)
+        _configure_decision_context(engine, bullish=True)
         engine.confidence_threshold = 0.55
-        signal = engine.generate_signal()
+        with patch("engine.decision.compute_features", side_effect=lambda df, btc: _mock_feature_frame(df, btc, bullish=True)):
+            signal = engine.generate_signal()
         assert signal is None
 
     def test_signal_has_correct_structure(self):
@@ -266,8 +316,10 @@ class TestDecisionEngine:
         fetcher = make_mock_fetcher(current_price=100.0)
         predictor = make_mock_predictor(prob_up=0.7, prob_down=0.3, confidence=0.75)
         engine = DecisionEngine(fetcher, predictor)
+        _configure_decision_context(engine, bullish=True)
         engine.confidence_threshold = 0.5
-        signal = engine.generate_signal()
+        with patch("engine.decision.compute_features", side_effect=lambda df, btc: _mock_feature_frame(df, btc, bullish=True)):
+            signal = engine.generate_signal()
         assert signal is not None
         assert isinstance(signal, TradeSignal)
         assert signal.pair != ""
@@ -281,8 +333,10 @@ class TestDecisionEngine:
         fetcher = make_mock_fetcher(current_price=100.0)
         predictor = make_mock_predictor(prob_up=0.7, prob_down=0.3, confidence=0.75)
         engine = DecisionEngine(fetcher, predictor)
+        _configure_decision_context(engine, bullish=True)
         engine.confidence_threshold = 0.5
-        signal = engine.generate_signal()
+        with patch("engine.decision.compute_features", side_effect=lambda df, btc: _mock_feature_frame(df, btc, bullish=True)):
+            signal = engine.generate_signal()
         assert signal is not None
         # stop_price = entry_price - 2 * ATR
         stop_distance = signal.entry_price - signal.stop_price
@@ -645,25 +699,21 @@ class TestSafetyManager:
         """Kill switch should block all trading."""
         from engine.safety import SafetyManager
         sm = SafetyManager()
-        sm._save_state("killed", True)
-        try:
-            can, reason = sm.can_trade()
-            assert not can
-            assert "kill" in reason.lower()
-        finally:
-            sm._save_state("killed", False)
+        sm._refresh_state_from_db = MagicMock()
+        sm._killed = True
+        can, reason = sm.can_trade()
+        assert not can
+        assert "kill" in reason.lower()
 
     def test_pause_blocks_trading(self):
         """Paused state should block trading."""
         from engine.safety import SafetyManager
         sm = SafetyManager()
-        sm._save_state("paused", True)
-        try:
-            can, reason = sm.can_trade()
-            assert not can
-            assert "paused" in reason.lower()
-        finally:
-            sm._save_state("paused", False)
+        sm._refresh_state_from_db = MagicMock()
+        sm._paused = True
+        can, reason = sm.can_trade()
+        assert not can
+        assert "paused" in reason.lower()
 
     def test_consecutive_losses_blocks_trading(self, patch_db):
         """Too many consecutive losses should block trading."""
@@ -1034,6 +1084,36 @@ class TestAPIServer:
         response = api_client.get("/api/model-info")
         assert response.status_code == 200
 
+    def test_model_info_endpoint_uses_artifact_metadata_fallback(self, api_client_and_db):
+        """GET /api/model-info should recover metadata from saved model artifacts when DB rows are absent."""
+        api_client, get_session = api_client_and_db
+        session = get_session()
+        session.add(EngineState(key="active_model_name", value={"value": "tft_test_artifact"}))
+        session.commit()
+        session.close()
+
+        with patch(
+            "dashboard.api._load_model_artifact_metadata",
+            return_value={
+                "version": "tft_test_artifact",
+                "trained_at": "2026-03-09T21:16:15.376671",
+                "validation_loss": 0.0026,
+                "sharpe_ratio": 1.1,
+                "max_drawdown": 0.12,
+                "accuracy": 0.56,
+            },
+        ):
+            response = api_client.get("/api/model-info")
+
+        assert response.status_code == 200
+        payload = response.json()["active_model"]
+        assert payload["version"] == "tft_test_artifact"
+        assert payload["trained_at"] == "2026-03-09T21:16:15.376671"
+        assert payload["validation_loss"] == 0.0026
+        assert payload["sharpe_ratio"] == 1.1
+        assert payload["max_drawdown"] == 0.12
+        assert payload["accuracy"] == 0.56
+
     def test_learning_metrics_endpoint(self, api_client_and_db):
         """GET /api/learning-metrics should return learning data."""
         api_client, _ = api_client_and_db
@@ -1059,11 +1139,14 @@ class TestEndToEndSimulation:
         fetcher = make_mock_fetcher(current_price=100.0)
         predictor = make_mock_predictor(prob_up=0.7, prob_down=0.3, confidence=0.75)
         decision = DecisionEngine(fetcher, predictor)
+        _configure_decision_context(decision, bullish=True)
         decision.confidence_threshold = 0.5
 
-        signal = decision.generate_signal()
+        with patch("engine.decision.compute_features", side_effect=lambda df, btc: _mock_feature_frame(df, btc, bullish=True)):
+            signal = decision.generate_signal()
         assert signal is not None
         assert signal.side == "BUY"
+        signal.position_size_multiplier = 1.0
 
         # Step 2: Execute signal
         tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
@@ -1113,10 +1196,13 @@ class TestEndToEndSimulation:
         fetcher = make_mock_fetcher(current_price=100.0)
         predictor = make_mock_predictor(prob_up=0.7, prob_down=0.3, confidence=0.75)
         decision = DecisionEngine(fetcher, predictor)
+        _configure_decision_context(decision, bullish=True)
         decision.confidence_threshold = 0.5
 
-        signal = decision.generate_signal()
+        with patch("engine.decision.compute_features", side_effect=lambda df, btc: _mock_feature_frame(df, btc, bullish=True)):
+            signal = decision.generate_signal()
         assert signal is not None
+        signal.position_size_multiplier = 1.0
 
         tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         tmp.close()

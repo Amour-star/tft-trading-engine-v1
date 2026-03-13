@@ -39,6 +39,12 @@ def _get_json(url: str, params: Dict[str, Any] | None = None, timeout_sec: float
     return response.json()
 
 
+def _post_json(url: str, payload: Dict[str, Any], timeout_sec: float = 8.0) -> Any:
+    response = requests.post(url, json=payload, timeout=timeout_sec)
+    response.raise_for_status()
+    return response.json()
+
+
 def _assert_finite_number(value: Any, label: str) -> None:
     if value is None:
         raise AssertionError(f"{label} is None")
@@ -141,7 +147,26 @@ def _wait_for_trade(api_map: Dict[str, str], timeout_sec: int) -> None:
             if isinstance(trades, list) and len(trades) > 0:
                 return
         time.sleep(5)
-    raise AssertionError(f"No trades observed within {timeout_sec}s")
+    diagnostics: Dict[str, Dict[str, Any]] = {}
+    for symbol, api_base in api_map.items():
+        try:
+            diagnostics[symbol] = {
+                "status": _get_json(f"{api_base}/status"),
+                "engine_state": _get_json(f"{api_base}/engine-state"),
+                "decision_events": _get_json(f"{api_base}/decision-events", params={"limit": 3}),
+            }
+        except Exception as exc:
+            diagnostics[symbol] = {"error": str(exc)}
+    raise AssertionError(
+        f"No trades observed within {timeout_sec}s. Diagnostics: {json.dumps(diagnostics, default=str)}"
+    )
+
+
+def _resume_if_paused(api_map: Dict[str, str]) -> None:
+    for _symbol, api_base in api_map.items():
+        status = _get_json(f"{api_base}/status")
+        if bool(status.get("paused", False)):
+            _post_json(f"{api_base}/control", {"action": "resume"})
 
 
 def _validate_dashboard(dashboard_url: str) -> None:
@@ -179,6 +204,8 @@ def main() -> None:
     api_map = _parse_api_map(args.apis)
     if not api_map:
         raise SystemExit("No API endpoints configured.")
+
+    _resume_if_paused(api_map)
 
     if not args.skip_trade_wait:
         _wait_for_trade(api_map, timeout_sec=max(1, int(args.wait_trade_timeout)))

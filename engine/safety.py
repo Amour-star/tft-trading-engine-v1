@@ -10,13 +10,14 @@ from loguru import logger
 from sqlalchemy import func, text
 
 from config.settings import settings
-from data.database import get_session, Trade, DailyStats, EngineState
+from data.database import EngineState, DailyStats, Trade, get_session, init_db
 
 
 class SafetyManager:
     """Monitors and enforces trading safety limits."""
 
     def __init__(self) -> None:
+        init_db()
         self.cfg = settings.safety
         self._paused: bool = False
         self._killed: bool = False

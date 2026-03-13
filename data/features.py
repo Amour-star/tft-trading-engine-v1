@@ -60,6 +60,7 @@ def compute_features(df: pd.DataFrame, btc_df: Optional[pd.DataFrame] = None) ->
     df["volume_sma_20"] = df["volume"].rolling(20).mean()
     df["volume_ratio"] = df["volume"] / df["volume_sma_20"]
     df["volume_delta"] = df["volume"].diff()
+    df["volume_delta_ratio"] = df["volume_delta"] / df["volume_sma_20"].replace(0, np.nan)
 
     # Buy/sell volume approximation
     df["buy_volume"] = df["volume"] * (
@@ -67,11 +68,21 @@ def compute_features(df: pd.DataFrame, btc_df: Optional[pd.DataFrame] = None) ->
     )
     df["sell_volume"] = df["volume"] - df["buy_volume"]
     df["volume_imbalance"] = (df["buy_volume"] - df["sell_volume"]) / df["volume"].replace(0, 1)
+    spread_proxy = (df["high"] - df["low"]).replace(0, np.nan) / df["close"].replace(0, np.nan)
+    df["orderbook_imbalance"] = (
+        df["volume_imbalance"] * 0.65
+        + np.tanh(df["returns"].fillna(0.0) / spread_proxy.fillna(1.0)) * 0.35
+    ).clip(-1.0, 1.0)
 
     # ---- Volatility features ----
     df["volatility_20"] = df["returns"].rolling(20).std()
     df["volatility_60"] = df["returns"].rolling(60).std()
     df["volatility_ratio"] = df["volatility_20"] / df["volatility_60"].replace(0, np.nan)
+    df["realized_vol_96"] = df["returns"].rolling(96).std()
+    df["realized_vol_288"] = df["returns"].rolling(288).std()
+    vol_mean = df["volatility_20"].rolling(96).mean()
+    vol_std = df["volatility_20"].rolling(96).std()
+    df["vol_zscore_96"] = (df["volatility_20"] - vol_mean) / vol_std.replace(0, np.nan)
 
     # ---- Volatility regime ----
     vol_median = df["volatility_20"].rolling(100).median()
@@ -83,6 +94,13 @@ def compute_features(df: pd.DataFrame, btc_df: Optional[pd.DataFrame] = None) ->
 
     # ---- Market regime (trend classification) ----
     df["market_regime"] = _classify_market_regime(df)
+    df["trend_strength_20"] = _trend_strength(df)
+    df["price_efficiency_20"] = _price_efficiency(df["close"], 20)
+    df["range_width_20"] = (
+        df["high"].rolling(20).max() - df["low"].rolling(20).min()
+    ) / df["close"].replace(0, np.nan)
+    df["range_compression_20"] = df["range_width_20"] / df["atr_14"].replace(0, np.nan)
+    df["chop_score_14"] = _chop_score(df["close"], 14)
 
     # ---- Temporal features ----
     if pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
@@ -103,16 +121,18 @@ def compute_features(df: pd.DataFrame, btc_df: Optional[pd.DataFrame] = None) ->
     # ---- BTC correlation / dominance ----
     if btc_df is not None and not btc_df.empty:
         btc_df = btc_df.copy()
+        btc_df.sort_values("timestamp", inplace=True)
         btc_df["btc_returns"] = btc_df["close"].pct_change()
-        merged = df.merge(
-            btc_df[["timestamp", "btc_returns", "close"]].rename(columns={"close": "btc_close"}),
+        merged = pd.merge_asof(
+            df[["timestamp", "returns"]].sort_values("timestamp"),
+            btc_df[["timestamp", "btc_returns", "close"]]
+            .rename(columns={"close": "btc_close"})
+            .sort_values("timestamp"),
             on="timestamp",
-            how="left",
+            direction="nearest",
         )
         df["btc_returns"] = merged["btc_returns"].values
-        df["btc_correlation"] = (
-            df["returns"].rolling(20).corr(df["btc_returns"])
-        )
+        df["btc_correlation"] = merged["returns"].rolling(20).corr(merged["btc_returns"])
         df["btc_close"] = merged["btc_close"].values
     else:
         df["btc_returns"] = 0.0
@@ -123,6 +143,8 @@ def compute_features(df: pd.DataFrame, btc_df: Optional[pd.DataFrame] = None) ->
     df["momentum_5"] = df["close"].pct_change(5)
     df["momentum_10"] = df["close"].pct_change(10)
     df["momentum_20"] = df["close"].pct_change(20)
+    df["trend_distance_50"] = (df["close"] - df["ema_50"]) / df["ema_50"].replace(0, np.nan)
+    df["trend_distance_200"] = (df["close"] - df["ema_200"]) / df["ema_200"].replace(0, np.nan)
 
     # ---- Bollinger Bands ----
     bb_sma = df["close"].rolling(20).mean()
@@ -138,6 +160,7 @@ def compute_features(df: pd.DataFrame, btc_df: Optional[pd.DataFrame] = None) ->
     df["macd"] = ema_12 - ema_26
     df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
     df["macd_hist"] = df["macd"] - df["macd_signal"]
+    df["regime_state"] = _resolve_regime_state(df)
 
     # ---- Final NaN / inf safety for model compatibility ----
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
@@ -147,7 +170,7 @@ def compute_features(df: pd.DataFrame, btc_df: Optional[pd.DataFrame] = None) ->
     if len(numeric_cols) > 0:
         df[numeric_cols] = df[numeric_cols].fillna(0.0)
     categorical_cols = [
-        c for c in ["volatility_regime", "market_regime", "session"] if c in df.columns
+        c for c in ["volatility_regime", "market_regime", "regime_state", "session"] if c in df.columns
     ]
     for col in categorical_cols:
         df[col] = df[col].fillna("unknown").astype(str)
@@ -205,6 +228,42 @@ def _get_session(hour: int) -> str:
         return "late_us"
 
 
+def _trend_strength(df: pd.DataFrame) -> pd.Series:
+    ema_gap = (df["ema_21"] - df["ema_50"]) / df["ema_50"].replace(0, np.nan)
+    slope = ema_gap.diff(5)
+    return (ema_gap.abs() * 25.0 + slope.abs() * 250.0).clip(0.0, 1.0)
+
+
+def _price_efficiency(series: pd.Series, window: int) -> pd.Series:
+    travel = series.diff().abs().rolling(window).sum()
+    net = series.diff(window).abs()
+    return (net / travel.replace(0, np.nan)).clip(0.0, 1.0)
+
+
+def _chop_score(series: pd.Series, window: int) -> pd.Series:
+    return (1.0 - _price_efficiency(series, window)).clip(0.0, 1.0)
+
+
+def _resolve_regime_state(df: pd.DataFrame) -> pd.Series:
+    state = pd.Series("range", index=df.index, dtype="object")
+    state = state.mask(df["volatility_regime"] == "extreme", "high_volatility")
+    state = state.mask(df["volatility_regime"] == "low", "low_volatility")
+    strong_trend = (
+        (df["trend_strength_20"] >= 0.55)
+        & (df["price_efficiency_20"] >= 0.35)
+        & df["market_regime"].isin(["strong_uptrend", "uptrend", "strong_downtrend", "downtrend"])
+    )
+    state = state.mask(strong_trend, "trend")
+    chop_mask = (
+        (df["chop_score_14"] >= 0.62)
+        & ~strong_trend
+        & (df["volatility_regime"] != "extreme")
+        & (df["volatility_regime"] != "low")
+    )
+    state = state.mask(chop_mask, "chop")
+    return state.fillna("range")
+
+
 # ---------------------------------------------------------------------------
 # Multi-timeframe feature alignment
 # ---------------------------------------------------------------------------
@@ -251,9 +310,11 @@ def get_feature_columns() -> list[str]:
         "atr_14", "atr_7",
         "rsi_14", "rsi_7",
         "ema_9_21_diff", "ema_21_50_diff",
-        "volume_ratio", "volume_delta", "volume_imbalance",
-        "volatility_20", "volatility_60", "volatility_ratio",
+        "volume_ratio", "volume_delta", "volume_delta_ratio", "volume_imbalance", "orderbook_imbalance",
+        "volatility_20", "volatility_60", "volatility_ratio", "realized_vol_96", "realized_vol_288", "vol_zscore_96",
         "momentum_5", "momentum_10", "momentum_20",
+        "trend_distance_50", "trend_distance_200", "trend_strength_20",
+        "price_efficiency_20", "range_width_20", "range_compression_20", "chop_score_14",
         "bb_width", "bb_position",
         "macd", "macd_signal", "macd_hist",
         "hour_sin", "hour_cos", "dow_sin", "dow_cos",
@@ -263,4 +324,4 @@ def get_feature_columns() -> list[str]:
 
 def get_categorical_columns() -> list[str]:
     """Return categorical feature columns."""
-    return ["volatility_regime", "market_regime", "session"]
+    return ["volatility_regime", "market_regime", "regime_state", "session"]
